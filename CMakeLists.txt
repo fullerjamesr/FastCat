@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.6)
+project(FastCat)
+
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=c11 -march=native -ffast-math -flto")
+
+set(SOURCE_FILES main.c fileio.c fileio.h coord.h coord.c cpdb.c cpdb.h atominfo.h saxs.c saxs.c saxs.h atominfo.c)
+add_executable(FastCat ${SOURCE_FILES})
