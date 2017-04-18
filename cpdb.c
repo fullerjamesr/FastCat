@@ -61,26 +61,47 @@ const double OrganicAtomVdw[] =
     1.77,   // S2H1
     2.04    // P4H0
 };
+const AtomType OrganicAtomBaseElement[] =
+{
+    Carbon,     // C3H0
+    Carbon,     // C3H1
+    Carbon,     // C4H1
+    Carbon,     // C4H2
+    Carbon,     // C4H3
+    Nitrogen,   // N2H0
+    Nitrogen,   // N3H0
+    Nitrogen,   // N3HImidazole
+    Nitrogen,   // N3H1
+    Nitrogen,   // N3HGuanidinium
+    Nitrogen,   // N3H2
+    Nitrogen,   // N4H3
+    Oxygen,     // O1H0
+    Oxygen,     // O2H0
+    Oxygen,     // O2H1
+    Sulfur,     // S2H0
+    Sulfur,     // S2H1
+    Phosphorus  // P4H0
+};
 const unsigned int OrganicAtomHCount[] =
 {
-    0,
-    1,
-    1,
-    2,
-    3,
-    0,
-    0,
-    1,
-    1,
-    2,
-    2,
-    3,
-    0,
-    0,
-    1,
-    0,
-    1,
-    0
+    0,  // C3H0
+    1,  // C3H1
+    1,  // C4H1
+    2,  // C4H2
+    3,  // C4H3
+    0,  // N2H0
+    0,  // N3H0
+    1,  // N3HImidazole
+    1,  // N3H1
+    2,  // N3HGuanidinium
+    2,  // N3H2
+    3,  // N4H3
+    0,  // O1H0
+    0,  // O2H0
+    1,  // O2H1
+    0,  // S2H0
+    1,  // S2H1
+    0   // P4H0
 };
 const double OrganicAtomVolumes[] =
 {
@@ -360,23 +381,37 @@ size_t read_atoms_from_pdbfile(Atom** buffer, size_t buffer_size, FILE* source, 
  * Returns:
  *  The total number of cells, which is the allocated size of `cells` and `cell_sizes`
  */
-size_t allocate_make_neighbor_list(NeighborList* nl, Atom *atoms, size_t num_atoms, double edge_length)
+static inline size_t neighborlist_indexof(NeighborList *nl, size_t x, size_t y, size_t z)
+{
+    return x + (y * nl->dimensions[0]) + (z * nl->dimensions[0] * nl->dimensions[1]);
+}
+static inline void neighborlist_addressof(size_t* address, size_t idx, NeighborList* nl)
+{
+    // the z coordinate is idx / (dim[0] * dim[1])
+    address[2] = idx / (nl->dimensions[0] * nl->dimensions[1]);
+    // the y coordinate is the remainder of the above divided by dim[0]
+    address[1] = (idx % (nl->dimensions[0] * nl->dimensions[1])) / nl->dimensions[0];
+    // the x coordinate is the remainder of the above
+    address[0] = (idx % (nl->dimensions[0] * nl->dimensions[1])) % nl->dimensions[0];
+}
+size_t allocate_make_neighbor_list(NeighborList *nl, const Atom *atoms, const size_t num_atoms,
+                                   const double edge_length)
 {
     // Sanity checks
     assert(atoms != NULL);
     assert(edge_length > 0.0);
     assert(nl != NULL);
     
-    nl->edgle_length = edge_length;
+    nl->edge_length = edge_length;
     
-    // Step 1: Find the bounds of atoms positions along each axis to define a simple bounding box
+    // Step 1: Find the maximum dimensions along each axis to define a simple bounding cube
     double min_x = atoms[0].position.x;
     double max_x = min_x;
     double min_y = atoms[0].position.y;
     double max_y = min_y;
     double min_z = atoms[0].position.z;
     double max_z = min_z;
-    for (int a = 1; a < num_atoms; a++)
+    for (size_t a = 1; a < num_atoms; a++)
     {
         if(atoms[a].position.x > max_x)
             max_x = atoms[a].position.x;
@@ -410,30 +445,54 @@ size_t allocate_make_neighbor_list(NeighborList* nl, Atom *atoms, size_t num_ato
     nl->cell_lists_len = num_cells;
     
     // Step 3: Allocate buckets
-    // `cell_buckets` is a linear representation of the cube of buckets, i = x + (y * x_cells) + (z * x_cells * y_cells)
-    // `cell_buckets_len` keeps track of how many atoms have been added to each `cell_bucket`
+    // `cell_lists` is a linear representation of the cube of buckets, i = x + (y * x_cells) + (z * x_cells * y_cells)
+    // `cells_len` keeps track of how many atoms have been added to each `cell_bucket`
     nl->cell_lists = malloc(sizeof(size_t*) * num_cells);
     nl->cells_len = malloc(sizeof(size_t) * num_cells);
     nl->cell_assignments = malloc(sizeof(size_t) * num_atoms);
-    for (int i = 0; i < num_cells; i++)
+    for(size_t i = 0; i < num_cells; i++)
     {
         nl->cell_lists[i] = malloc(sizeof(size_t) * num_atoms);
         nl->cells_len[i] = 0;
     }
     
     //Step 4: Sort atoms into bucket by position
-    for (size_t a = 0; a < num_atoms; a++)
+    for(size_t a = 0; a < num_atoms; a++)
     {
         size_t x_loc = (size_t) floor((atoms[a].position.x - min_x) / edge_length);
         size_t y_loc = (size_t) floor((atoms[a].position.y - min_y) / edge_length);
         size_t z_loc = (size_t) floor((atoms[a].position.z - min_z) / edge_length);
-        size_t cell_address = neighborlist_addressof(nl,x_loc, y_loc, z_loc);
+        size_t cell_address = neighborlist_indexof(nl, x_loc, y_loc, z_loc);
         nl->cell_assignments[a] = cell_address;
         nl->cell_lists[cell_address][nl->cells_len[cell_address]++] = a;
     }
     
     return num_cells;
 }
+size_t neighborlist_get_adjacent_cell_indices(size_t* dest, size_t idx, NeighborList* nl)
+{
+    assert(dest != NULL);
+    assert(idx < nl->cell_lists_len);
+    
+    size_t address[3];
+    neighborlist_addressof(address, idx, nl);
+    
+    int xmin = address[0] > 0 ? -1 : 0;
+    int xmax = address[0] < (nl->dimensions[0] - 1) ? 1 : 0;
+    int ymin = address[1] > 0 ? -1 : 0;
+    int ymax = address[1] < (nl->dimensions[1] - 1) ? 1 : 0;
+    int zmin = address[2] > 0 ? -1 : 0;
+    int zmax = address[2] < (nl->dimensions[2] - 1) ? 1 : 0;
+    size_t j = 0;
+    for(int x = xmin; x < xmax; x++)
+        for(int y = ymin; y < ymax; y++)
+            for(int z = zmin; z < zmax; z++)
+                if( ! (x == 0 && y == 0 && z == 0))
+                    dest[j++] = neighborlist_indexof(nl, address[0] + x, address[1] + y, address[2] + z);
+    
+    return j;
+}
+
 void free_neighborlist(NeighborList* nl)
 {
     for(int i = 0; i < nl->cell_lists_len; i++)
@@ -815,6 +874,8 @@ void assign_organic_atom_types(Atom* atoms, size_t num_atoms)
         if(atoms[a].element == Carbon || atoms[a].element == Nitrogen || atoms[a].element == Oxygen ||
                 atoms[a].element == Sulfur || atoms[a].element == Phosphorus)
             atoms[a].organic_type = determine_bonding_config(atoms+a);
+        else
+            atoms[a].organic_type = UnknownBonds;
 }
 
 double get_vdw_radius(Atom* atom, bool implicit_hydrogen)
@@ -837,4 +898,108 @@ double get_atom_volume(Atom *atom, bool implicit_hydrogen)
         return VdwSphereVolumes[atom->element];
 }
 
-
+double shrake_rupley_sasa(double* restrict sasa_per_atom, const double probe_radius, const Atom* restrict atoms, const size_t num_atoms,
+                          bool implicit_hydrogen, NeighborList* neighborList, coord* restrict sampling_vectors,
+                          const size_t num_vectors)
+{
+    assert(sasa_per_atom != NULL);
+    assert(atoms != NULL);
+    assert(probe_radius > 0.0);
+  
+    double total_sasa = 0.0;
+    
+    // Generate sampling vectors if not provided
+    bool local_sampvec = false;
+    if(sampling_vectors == NULL)
+    {
+        // It's either assert this or make num_vectors not const. I'd prefer to ward against bugs for the time being.
+        assert(num_vectors % 2 == 1);
+        sampling_vectors = malloc(sizeof(coord) * num_vectors);
+        golden_spiral_distribution(sampling_vectors, num_vectors);
+        local_sampvec = true;
+    }
+    
+    // Generate NeighborList if not provided
+    bool local_nl = false;
+    if(neighborList == NULL)
+    {
+        neighborList = malloc(sizeof(NeighborList));
+        allocate_make_neighbor_list(neighborList, atoms, num_atoms, probe_radius * 2 + 4.0);
+        local_nl = true;
+    }
+    
+    // An array to store the shifted sampling points (get's re-written every loop)
+    coord* sampling_points = malloc(sizeof(coord) * num_vectors);
+    
+    for(size_t i = 0; i < neighborList->cell_lists_len; i++)
+    {
+        // cells adjacent to `i` are any of the 26 cells with (X, Y, Z) are all either == I or == I+/- 1
+        // but also leave space for the self-cell
+        size_t adjacent_cells[27] = { i };
+        size_t adjacent_count = neighborlist_get_adjacent_cell_indices(adjacent_cells + 1, i, neighborList) + 1;
+        
+        // for every atom in the current cell...
+        for(size_t cell_idx = 0; cell_idx < neighborList->cells_len[i]; cell_idx++)
+        {
+            size_t atom_idx = neighborList->cell_lists[i][cell_idx];
+            Atom atom = atoms[atom_idx];
+            // for solvent accessible surface, the test is "What part of a sphere of radius (vdw + probe) is outside of
+            // all neighboring atoms sphere's of (radius + probe)?"
+            double atom_radius = get_vdw_radius(&atom, implicit_hydrogen) + probe_radius;
+            
+            // The count of how many are exposed
+            size_t exposed_count = num_vectors;
+            
+            // Generate sampling points
+            for(size_t v = 0; v < num_vectors; v++)
+                sampling_points[v] = vec_add(atom.position, vec_multiply(sampling_vectors[v], atom_radius));
+            
+            // for every sampling point on that atom...
+            for(size_t v = 0; v < num_vectors; v++)
+            {
+                coord surface_point = sampling_points[v];
+                bool exposed = true;
+                // for every cell within range...
+                for(size_t j = 0; j < adjacent_count && exposed ; j++)
+                {
+                    size_t current_cell_idx = adjacent_cells[j];
+                    assert(current_cell_idx < neighborList->cell_lists_len);
+                    size_t* cell = neighborList->cell_lists[current_cell_idx];
+                    // for every neighboring atoms in neighboring cells...
+                    for(size_t k = 0; k <  neighborList->cells_len[current_cell_idx] && exposed; k++)
+                    {
+                        size_t neighbor_idx = cell[k];
+                        Atom neighbor = atoms[neighbor_idx];
+                        double neighbor_radius = get_vdw_radius(&neighbor, implicit_hydrogen) + probe_radius;
+                        if(distance_squared(surface_point, neighbor.position) < neighbor_radius * neighbor_radius)
+                        {
+                            assert(exposed_count > 0);
+                            exposed_count--;
+                            exposed = false;
+                        }
+                    }
+                }
+                    
+            }
+            
+            // SASA is approximately (number of exposed points / total points) * atom surface area
+            double sasa_fraction = ((double) exposed_count) / num_vectors;
+            // I think this is not the intuitive value to store here, but it is the most useful for SAXS.
+            // TODO: Think about how to return the most relevant information here
+            sasa_per_atom[atom_idx] = sasa_fraction;
+            total_sasa += 4.0 * coord_pi * atom_radius * atom_radius * sasa_fraction;
+        }
+    }
+    
+    // Cleanup
+    free(sampling_points);
+    if(local_sampvec)
+        free(sampling_vectors);
+    if(local_nl)
+    {
+        free_neighborlist(neighborList);
+        free(neighborList);
+    }
+    
+    return total_sasa;
+}

@@ -4,7 +4,8 @@
 #include <time.h>
 #include "saxs.h"
 
-static const double bohr = 0.52978;
+
+static const double bohr = 0.52917721067;
 
 double fast_form_factor(unsigned int z, double q)
 {
@@ -44,6 +45,7 @@ static const double FormFactorConstants[30][7] =
     {2.648,0.02328,0.00102,0.00712,8.91E-05,4.61E-04,2.12E-04},
     {2.78,0.02398,7.35E-04,0.00677,7.09E-05,2.30E-04,5.28E-05}
 };
+//TODO: Having to increment z because Hydrogen = 0 will only confuse down the line
 double form_factor(unsigned int z, double q)
 {
     if(z < 31)
@@ -71,360 +73,269 @@ double form_factor(unsigned int z, double q)
         return fast_form_factor(z,q);
 }
 
-void unfitted_saxs2(double* restrict intensities, Atom* atoms, size_t num_atoms,
-                                      double* restrict q_grid, size_t len_grid, coord* sampling_vectors, size_t num_vectors,
-                                      double solvent_density, double radius_adjustment)
+
+// TODO: is size_t, which is generally 8 bytes, unnecessarily large for enums, which are generally 4 bytes?
+static const size_t MAX_OFFSET = (size_t) (AtomTypeCount + OrganicAtomConfigCount);
+static inline size_t atom2offset(const Atom *atom)
 {
-    // Iterate thru atoms to generate a "transposed" array of positions
-    coord* positions = malloc(sizeof(coord) * num_atoms);
-    //double** newff = malloc(sizeof(double) * len_grid * )
-    for(int i = 0; i < num_atoms; i++)
-        positions[i] = atoms[i].position;
+    return atom->organic_type < UnknownBonds ? AtomTypeCount + atom->organic_type : atom->element;
+}
+
+void allocate_form_factor_table(FormFactorTable* const to_init, const size_t q_length, const size_t radius_samples)
+{
+    assert(to_init != NULL);
     
+    to_init->vacuo_form_factors = malloc(sizeof(double) * q_length * MAX_OFFSET);
+    to_init->dummy_form_factors = malloc(sizeof(double) * q_length * MAX_OFFSET * radius_samples);
+    to_init->solvent_form_factors = malloc(sizeof(double) * q_length * MAX_OFFSET);
     
-    // The form factors for each atom in a vacuum as depend only on q and atom.element
-    double* vacuo_form_factors[AtomTypeCount] = { NULL };
-    double* form_factors[AtomTypeCount + OrganicAtomConfigCount] = { NULL };
-    size_t* offsets = malloc(sizeof(size_t) * num_atoms);   // maps indices of atom --> form_factors
-    // Avoid repeated squaring of q when adjusting dummy atom form factors
-    double* q_squared = malloc(sizeof(double) * len_grid);
+    assert(to_init->vacuo_form_factors != NULL);
+    assert(to_init->dummy_form_factors != NULL);
+    assert(to_init->solvent_form_factors != NULL);
     
-    // These properties can be moved out of the q loop for calculating the corrected form factors
-    double vol;
-    double pivol23;
-    double dummy_ff;
+    to_init->dummy_options_count = radius_samples;
+}
+static inline void enumerate_dummy_volume_adjustments(double* const restrict destination, const double q,
+                                                      const double default_volume, const double min_radius_adjustment,
+                                                      const double max_radius_adjustment, const size_t num_radius_samples,
+                                                      const double dummy_solvent_density)
+{
+    double delta = (max_radius_adjustment - min_radius_adjustment) / num_radius_samples;
     
-    clock_t begin, end;
-    double time_spent;
-    begin = clock();
-    // do hydrogens first to add implicitly to combined organic atoms
-    //      also populate the q squared lookup table while we're at it
-    vacuo_form_factors[Hydrogen] = malloc(sizeof(double) * len_grid);
-    form_factors[Hydrogen] = malloc(sizeof(double) * len_grid);
-    vol = sphere_volume(VdwRadii[Hydrogen] * radius_adjustment);
-    pivol23 = -pow(vol, 2.0/3.0) / (coord_pi * 16.0);
-    dummy_ff = solvent_density * vol;
-    for(size_t q = 0; q < len_grid; q++)
+    double constant = q * q / (coord_pi * 16.0);
+    
+    for(size_t i = 0; i < num_radius_samples; i++)
     {
-        double q2 = q_grid[q] * q_grid[q];
-        double vff = form_factor(Hydrogen, q_grid[q]);
-        double ff = vff - dummy_ff * exp(q2 * pivol23);
-        vacuo_form_factors[Hydrogen][q] = vff;
-        form_factors[Hydrogen][q] = ff;
-        q_squared[q] = q2;
+        double adjustment = min_radius_adjustment + delta * i;
+        double current_volume = default_volume * adjustment * adjustment * adjustment;
+        destination[i] = dummy_solvent_density * current_volume * exp(-pow(current_volume, 2.0/3.0) * constant);
     }
+}
+/*
+ *  Assumes
+ *      destination->vacuo_form_factors is at least `q_values_length` * (AtomTypeCount + OrganicAtomTypeCount) long
+ *      destination->dummy_form_factors is at least `q_values_length` * (AtomTypeCount + OrganicAtomTypeCount) * `num_radius_samples` long
+ *      destination->solvent_form_factors is at least `q_values_length` long
+ */
+void populate_form_factor_table(FormFactorTable* const destination, const Atom* const atoms, const size_t atoms_length,
+                                const double* const restrict q_values, const size_t q_values_length,
+                                const double min_radius_adjustment, const double max_radius_adjustment, const size_t num_radius_samples,
+                                const double dummy_solvent_density)
+{
+    // Holds a boolean list for identifying the set of elements and combined atoms present in `atoms`
+    bool* restrict elements_to_build = calloc(AtomTypeCount, sizeof(bool));
+    bool* restrict heavy_atoms_to_build = calloc(OrganicAtomConfigCount, sizeof(bool));
+    // This boolean array is used in conjunction with needs_to_be_built, the difference being that base elements are
+    // NOT set to true in this list, unlike `needs_to_be_built`
+    bool* restrict exists_in_molecule = calloc(AtomTypeCount, sizeof(bool));
     
+    for(size_t a = 0; a < atoms_length; a++)
+    {
+        elements_to_build[atoms[a].element] = true;
+        if(atoms[a].organic_type < UnknownBonds)
+            heavy_atoms_to_build[atoms[a].organic_type] = true;
+        else
+            exists_in_molecule[atoms[a].element] = true;
+    }
+    // Hydrogen is unlikely to be in a PDB but is needed for basically all heavy atoms
+    elements_to_build[Hydrogen] = true;
+    // Needed for water (for solvent)
+    elements_to_build[Oxygen] = true;
+    
+    // Fill `destination->vacuo_form_factors` and `destination->dummy_form_factors`, but only for those elements/heavy
+    // atoms present in `atoms`. The solvent (H2O) can also be done based on Oxygen and Hydrogen.
+    for(size_t q = 0; q < q_values_length; q++)
+    {
+        size_t heavy_row = q * MAX_OFFSET;
+        double q_value = q_values[q];
+        
+        for(size_t e = 0; e < AtomTypeCount; e++)
+        {
+            if(elements_to_build[e])
+            {
+                destination->vacuo_form_factors[heavy_row + e] = form_factor(e, q_value);
+                if(exists_in_molecule[e])
+                {
+                    enumerate_dummy_volume_adjustments(destination->dummy_form_factors +
+                                                       (q * MAX_OFFSET * num_radius_samples + e * num_radius_samples),
+                                                       q_value, VdwSphereVolumes[e], min_radius_adjustment,
+                                                       max_radius_adjustment, num_radius_samples, dummy_solvent_density);
+                }
+            }
+        }
+    
+        for(size_t e = 0; e < OrganicAtomConfigCount; e++)
+        {
+            if(heavy_atoms_to_build[e])
+            {
+                size_t offset = e + AtomTypeCount;
+                destination->vacuo_form_factors[heavy_row + offset] =
+                        destination->vacuo_form_factors[heavy_row + OrganicAtomBaseElement[e]] +
+                        destination->vacuo_form_factors[heavy_row + Hydrogen] * OrganicAtomHCount[e];
+                enumerate_dummy_volume_adjustments(destination->dummy_form_factors +
+                                                       (heavy_row * num_radius_samples + offset * num_radius_samples),
+                                                       q_value, OrganicAtomVolumes[e], min_radius_adjustment,
+                                                       max_radius_adjustment, num_radius_samples, dummy_solvent_density);
+            }
+        }
+        
+        // The solvent goes below. The assumption is it's H2O, and the constants below are pre-calculated assuming a
+        // radius of 1.525 angstroms.
+        destination->solvent_form_factors[q] = destination->vacuo_form_factors[heavy_row + Oxygen]
+                                               + destination->vacuo_form_factors[heavy_row + Hydrogen] * 2
+                                               - dummy_solvent_density * 14.85587171 * exp(q_value * q_value * 0.1202252175);
+    }
+
+    free(elements_to_build);
+    free(heavy_atoms_to_build);
+    free(exists_in_molecule);
+}
+
+void unfitted_saxs(SaxsProfile* restrict saxs, const Atom* const restrict atoms, const double* const restrict per_atom_sasa, const size_t num_atoms,
+                   const coord* restrict sampling_vectors, const size_t num_vectors,
+                   const FormFactorTable* const formFactorTable, const size_t dummy_offset, const double solvation_factor)
+{
+    const size_t saxs_profile_length = saxs->length;
+    const size_t dummy_options_count = formFactorTable->dummy_options_count;
+ 
+    // spool out offsets and positions for better memory layout
+    coord* restrict positions = malloc(sizeof(coord) * num_atoms);
+    size_t* restrict offsets = malloc(sizeof(size_t) * num_atoms);
     for(size_t a = 0; a < num_atoms; a++)
     {
-        offsets[a] = atoms[a].organic_type < UnknownBonds ? AtomTypeCount+atoms[a].organic_type : atoms[a].element;
-        assert(offsets[a] >= AtomTypeCount);
-        // If this is the first occurance of this element
-        // ... then we can calculate the vacuo form factors across all q, while also doing the form factors for this atom
-        if(vacuo_form_factors[atoms[a].element] == NULL)
-        {
-            
-            vacuo_form_factors[atoms[a].element] = malloc(sizeof(double) * len_grid);
-            form_factors[offsets[a]] = malloc(sizeof(double) * len_grid);
-            //vol = get_atom_volume(atoms+a,true);
-            vol = get_atom_volume(atoms + a, true) * radius_adjustment * radius_adjustment * radius_adjustment;
-            pivol23 = -pow(vol, 2.0/3.0) / (coord_pi * 16.0);
-            dummy_ff = solvent_density * vol;
-            for(size_t q = 0; q < len_grid; q++)
-            {
-                double vff = form_factor(atoms[a].element, q_grid[q]);
-                vacuo_form_factors[atoms[a].element][q] = vff;
-                double ff = vff + OrganicAtomHCount[atoms[a].organic_type] * vacuo_form_factors[Hydrogen][q] - dummy_ff * exp(q_squared[q] * pivol23);
-                form_factors[offsets[a]][q] = ff;
-            }
-        }
-            //  Else if we've never seen this combined organic atom before
-            //  ... just do the corrected form factor calculation using previously stored vacuo factors
-        else if(form_factors[offsets[a]] == NULL)
-        {
-            form_factors[offsets[a]] = malloc(sizeof(double) * len_grid);
-            vol = get_atom_volume(atoms + a, true) * radius_adjustment * radius_adjustment * radius_adjustment;
-            pivol23 = -pow(vol, 2.0/3.0) / (coord_pi * 16.0);
-            dummy_ff = solvent_density * vol;
-            for(size_t q = 0; q < len_grid; q++)
-            {
-                double vff = vacuo_form_factors[atoms[a].element][q] + OrganicAtomHCount[atoms[a].organic_type] * vacuo_form_factors[Hydrogen][q];
-                double ff = vff - dummy_ff * exp(q_squared[q] * pivol23);
-                form_factors[offsets[a]][q] = ff;
-            }
-        }
+        positions[a] = atoms[a].position;
+        offsets[a] = atom2offset(atoms+a);
     }
-    // Step 1: Place solvent globs
-    end = clock();
-    time_spent = (double)(end - begin) / CLOCKS_PER_SEC;
-    printf("Populating form factor table took %0.4f sec\n", time_spent);
     
-    begin = clock();
-    // Step 2: calculate scattering
     #pragma omp parallel for
-    for(size_t q = 0; q < len_grid; q++)
+    for(size_t q = 0; q < saxs_profile_length; q++)
     {
         double intensity = 0.0;
+        double q_value = saxs->q[q];
+        size_t ff_table_row = q * MAX_OFFSET;
         for(size_t v = 0; v < num_vectors; v++)
         {
             double cos_bucket = 0.0;
             double sin_bucket = 0.0;
-            coord q_vector = vec_multiply(sampling_vectors[v], q_grid[q]);
+            coord q_vector = vec_multiply(sampling_vectors[v], q_value);
             
             for(size_t a = 0; a < num_atoms; a++)
             {
-                double corrected_f = form_factors[offsets[a]][q];
-                double scat = dot_product(q_vector,positions[a]);
-                cos_bucket += corrected_f * cos(scat);
-                sin_bucket += corrected_f * sin(scat);
+                double corrected_f = formFactorTable->vacuo_form_factors[ff_table_row + offsets[a]]
+                                     - formFactorTable->dummy_form_factors[ff_table_row * dummy_options_count + offsets[a] * dummy_options_count + dummy_offset]
+                                     + per_atom_sasa[a] * solvation_factor * formFactorTable->solvent_form_factors[q];
+                double scat = dot_product(q_vector, positions[a]);
+                //TODO: Using the trig identity to get sin is faster on both gcc and icc, but we should find out if this
+                //      is still the case after accounting for the fact that we need to keep track of quadrant
+                double cos_scat = cos(scat);
+                double sin_scat = sin(scat);
+                cos_bucket += corrected_f * cos_scat;
+                sin_bucket += corrected_f * sin_scat;
             }
             intensity += cos_bucket * cos_bucket + sin_bucket * sin_bucket;
         }
-        intensities[q] = intensity / num_vectors;
+        saxs->i[q] = intensity / num_vectors;
     }
-    end = clock();
-    time_spent = (double)(end - begin) / CLOCKS_PER_SEC;
-    printf("Calculating scattering took %0.4f sec\n", time_spent);
     
-    // Free allocated memory
     free(offsets);
-    free(q_squared);
     free(positions);
-    for(size_t e = 0; e < AtomTypeCount + OrganicAtomConfigCount; e++)
-    {
-        if(form_factors[e] != NULL)
-            free(form_factors[e]);
-        if( e < AtomTypeCount && vacuo_form_factors[e] != NULL)
-            free(vacuo_form_factors[e]);
-    }
 }
 
-
-void unfitted_saxs(double* restrict intensities, Atom* atoms, size_t num_atoms,
-                   double* restrict q_grid, size_t len_grid, coord* sampling_vectors, size_t num_vectors,
-                   double solvent_density, double radius_adjustment)
+/*
+for(size_t q = 0; q < len_grid; q++)
 {
-    /*
-     * Step 0: Pre-calculate any values that would benefit being taken out of the main nested loops, i.e. any components
-     * of the equation that don't need to know q, v, and a simultaneously
-     */
-    
-    // The form factors for each atom in a vacuum as depend only on q and atom.element
-    double* vacuo_form_factors[AtomTypeCount] = { NULL };
-    double* form_factors[AtomTypeCount + OrganicAtomConfigCount] = { NULL };
-    size_t* offsets = malloc(sizeof(size_t) * num_atoms);   // maps indices of atom --> form_factors
-    // Avoid repeated squaring of q when adjusting dummy atom form factors
-    double* q_squared = malloc(sizeof(double) * len_grid);
-    
-    // These properties can be moved out of the q loop for calculating the corrected form factors
-    double vol;
-    double pivol23;
-    double dummy_ff;
-    
-    
-    clock_t begin, end;
-    double time_spent;
-    begin = clock();
-    
-    // do hydrogens first to add implicitly to combined organic atoms
-    //      also populate the q squared lookup table while we're at it
-    vacuo_form_factors[Hydrogen] = malloc(sizeof(double) * len_grid);
-    form_factors[Hydrogen] = malloc(sizeof(double) * len_grid);
-    vol = sphere_volume(VdwRadii[Hydrogen] * radius_adjustment);
-    pivol23 = -pow(vol, 2.0/3.0) / (coord_pi * 16.0);
-    dummy_ff = solvent_density * vol;
-    for(size_t q = 0; q < len_grid; q++)
+    double intensity = malloc(sizeof(double) * d * h);
+    size_t ff_table_row = q * num_atoms;
+    for(size_t v = 0; v < num_vectors; v++)
     {
-        double q2 = q_grid[q] * q_grid[q];
-        double vff = form_factor(Hydrogen, q_grid[q]);
-        double ff = vff - dummy_ff * exp(q2 * pivol23);
-        vacuo_form_factors[Hydrogen][q] = vff;
-        form_factors[Hydrogen][q] = ff;
-        q_squared[q] = q2;
-    }
-    
-    for(size_t a = 0; a < num_atoms; a++)
-    {
-        offsets[a] = atoms[a].organic_type < UnknownBonds ? AtomTypeCount+atoms[a].organic_type : atoms[a].element;
-        assert(offsets[a] >= AtomTypeCount);
-        // If this is the first occurance of this element
-        // ... then we can calculate the vacuo form factors across all q, while also doing the form factors for this atom
-        if(vacuo_form_factors[atoms[a].element] == NULL)
+        double vacuum_cos_bucket = 0.0;
+        double vacuum_sin_bucket = 0.0;
+        double dummy_cos_bucket = malloc(sizeof(double) * d);
+        double dummy_sin_bucket = malloc(sizeof(double) * d);
+        double hydration_cos_bucket = 0.0;
+        double hydration_sin_bucket = 0.0;
+        
+        coord q_vector = vec_multiply(sampling_vectors[v], saxs->q[q]);
+        
+        for(size_t a = 0; a < num_atoms; a++)
         {
+            double scat = dot_product(q_vector, positions[a]);
+            //TODO: Using the trig identity to get sin is faster on both gcc and icc, but we should find out if this
+            //      is still the case after accounting for the fact that we need to keep track of quadrant
+            double cos_scat = cos(scat);
+            double sin_scat = sin(scat);
             
-            vacuo_form_factors[atoms[a].element] = malloc(sizeof(double) * len_grid);
-            form_factors[offsets[a]] = malloc(sizeof(double) * len_grid);
-            //vol = get_atom_volume(atoms+a,true);
-            vol = get_atom_volume(atoms + a, true) * radius_adjustment * radius_adjustment * radius_adjustment;
-            pivol23 = -pow(vol, 2.0/3.0) / (coord_pi * 16.0);
-            dummy_ff = solvent_density * vol;
-            for(size_t q = 0; q < len_grid; q++)
-            {
-                double vff = form_factor(atoms[a].element, q_grid[q]);
-                vacuo_form_factors[atoms[a].element][q] = vff;
-                double ff = vff + OrganicAtomHCount[atoms[a].organic_type] * vacuo_form_factors[Hydrogen][q] - dummy_ff * exp(q_squared[q] * pivol23);
-                form_factors[offsets[a]][q] = ff;
-            }
-        }
-        //  Else if we've never seen this combined organic atom before
-        //  ... just do the corrected form factor calculation using previously stored vacuo factors
-        else if(form_factors[offsets[a]] == NULL)
-        {
-            form_factors[offsets[a]] = malloc(sizeof(double) * len_grid);
-            vol = get_atom_volume(atoms + a, true) * radius_adjustment * radius_adjustment * radius_adjustment;
-            pivol23 = -pow(vol, 2.0/3.0) / (coord_pi * 16.0);
-            dummy_ff = solvent_density * vol;
-            for(size_t q = 0; q < len_grid; q++)
-            {
-                double vff = vacuo_form_factors[atoms[a].element][q] + OrganicAtomHCount[atoms[a].organic_type] * vacuo_form_factors[Hydrogen][q];
-                double ff = vff - dummy_ff * exp(q_squared[q] * pivol23);
-                form_factors[offsets[a]][q] = ff;
-            }
-        }
-    }
-    // Step 1: Place solvent globs
-    // Step 1: Place solvent globs
-    end = clock();
-    time_spent = (double)(end - begin) / CLOCKS_PER_SEC;
-    printf("Populating form factor table took %0.4f sec\n", time_spent);
-    
-    begin = clock();
-    // Step 2: calculate scattering
-    #pragma omp parallel for
-    for(size_t q = 0; q < len_grid; q++)
-    {
-        double intensity = 0.0;
-        for(size_t v = 0; v < num_vectors; v++)
-        {
-            double cos_bucket = 0.0;
-            double sin_bucket = 0.0;
-            coord q_vector = vec_multiply(sampling_vectors[v], q_grid[q]);
             
-            for(size_t a = 0; a < num_atoms; a++)
-            {
-                Atom* atom = atoms+a;
-                double corrected_f = form_factors[offsets[a]][q];
-                double scat = dot_product(q_vector,atom->position);
-                cos_bucket += corrected_f * cos(scat);
-                sin_bucket += corrected_f * sin(scat);
-            }
-            intensity += cos_bucket * cos_bucket + sin_bucket * sin_bucket;
+            double vacuum_ff = form_factor_per_atom[a + ff_table_row];
+            vacuum_cos_bucket += vacuum_ff * cos_scat;
+            vacuum_sin_bucket += vacuum_ff * sin_scat;
+            
+            double water_f = get water ff
+            hydration_cos_bucket += water_f * cos_scat;
+            hydration_sin_bucket += water_f * sin_scat;
+            
+            for each dummy possibility
+                update dummy_cos_bucket
         }
-        intensities[q] = intensity / num_vectors;
+        for each d x h
+            intensity += the square of all values
     }
-    end = clock();
-    time_spent = (double)(end - begin) / CLOCKS_PER_SEC;
-    printf("Calculating scattering took %0.4f sec\n", time_spent);
-    
-    // Free allocated memory
-    free(offsets);
-    free(q_squared);
-    for(size_t e = 0; e < AtomTypeCount + OrganicAtomConfigCount; e++)
-    {
-        if(form_factors[e] != NULL)
-            free(form_factors[e]);
-        if( e < AtomTypeCount && vacuo_form_factors[e] != NULL)
-            free(vacuo_form_factors[e]);
-    }
+    for each d x h
+        saxs->i[q][d][h] = intensity[d][h] / num_vectors;
 }
+*/
 
-void debeye(double* restrict intensities, Atom* atoms, size_t num_atoms,
-            double* restrict q_grid, size_t len_grid, double solvent_density)
+void unfitted_debeye(SaxsProfile* restrict saxs, const Atom* const restrict atoms, const double* const restrict per_atom_sasa, const size_t num_atoms,
+                     const FormFactorTable* const formFactorTable, const size_t dummy_offset, const double solvation_factor)
 {
-    /*
-    * Step 0: Pre-calculate any values that would benefit being taken out of the main nested loops, i.e. any components
-    * of the equation that don't need to know q, v, and a simultaneously
-    */
-    // The form factors for each atom in a vacuum as depend only on q and atom.element
-    double* vacuo_form_factors[AtomTypeCount] = { NULL };
-    double* form_factors[AtomTypeCount + OrganicAtomConfigCount] = { NULL };
-    size_t* offsets = malloc(sizeof(size_t) * num_atoms);   // maps indices of atom --> form_factors
-    // Avoid repeated squaring of q when adjusting dummy atom form factors
-    double* q_squared = malloc(sizeof(double) * len_grid);
+    const size_t saxs_profile_length = saxs->length;
+    const size_t dummy_options_count = formFactorTable->dummy_options_count;
     
-    // These properties can be moved out of the q loop for calculating the corrected form factors
-    double vol;
-    double pivol23;
-    double dummy_ff;
-    
-    // do hydrogens first to add implicitly to combined organic atoms
-    //      also populate the q squared lookup table while we're at it
-    vacuo_form_factors[Hydrogen] = malloc(sizeof(double) * len_grid);
-    form_factors[Hydrogen] = malloc(sizeof(double) * len_grid);
-    vol = sphere_volume(VdwRadii[Hydrogen]);
-    pivol23 = -pow(vol, 2.0/3.0) / (coord_pi * 16.0);
-    dummy_ff = solvent_density * vol;
-    for(size_t q = 0; q < len_grid; q++)
-    {
-        double q2 = q_grid[q] * q_grid[q];
-        double vff = form_factor(Hydrogen, q_grid[q]);
-        double ff = vff - dummy_ff * exp(q2 * pivol23);
-        vacuo_form_factors[Hydrogen][q] = vff;
-        form_factors[Hydrogen][q] = ff;
-        q_squared[q] = q2;
-    }
-    
+    // spool out offsets and positions for better memory layout
+    coord* restrict positions = malloc(sizeof(coord) * num_atoms);
+    size_t* restrict offsets = malloc(sizeof(size_t) * num_atoms);
     for(size_t a = 0; a < num_atoms; a++)
     {
-        offsets[a] = atoms[a].organic_type < UnknownBonds ? AtomTypeCount+atoms[a].organic_type : atoms[a].element;
-        // If this is the first occurance of this element
-        // ... then we can calculate the vacuo form factors across all q, while also doing the form factors for this atom
-        if(vacuo_form_factors[atoms[a].element] == NULL)
-        {
-            
-            vacuo_form_factors[atoms[a].element] = malloc(sizeof(double) * len_grid);
-            form_factors[offsets[a]] = malloc(sizeof(double) * len_grid);
-            vol = get_atom_volume(atoms+a,true);
-            pivol23 = -pow(vol, 2.0/3.0) / (coord_pi * 16.0);
-            dummy_ff = solvent_density * vol;
-            for(size_t q = 0; q < len_grid; q++)
-            {
-                double vff = form_factor(atoms[a].element, q_grid[q]);
-                vacuo_form_factors[atoms[a].element][q] = vff;
-                double ff = vff + OrganicAtomHCount[atoms[a].organic_type] * vacuo_form_factors[Hydrogen][q] - dummy_ff * exp(q_squared[q] * pivol23);
-                form_factors[offsets[a]][q] = ff;
-            }
-        }
-            //  Else if we've never seen this combined organic atom before
-            //  ... just do the corrected form factor calculation using previously stored vacuo factors
-        else if(form_factors[offsets[a]] == NULL)
-        {
-            form_factors[offsets[a]] = malloc(sizeof(double) * len_grid);
-            vol = get_atom_volume(atoms+a,true);
-            pivol23 = -pow(vol, 2.0/3.0) / (coord_pi * 16.0);
-            dummy_ff = solvent_density * vol;
-            for(size_t q = 0; q < len_grid; q++)
-            {
-                double vff = vacuo_form_factors[atoms[a].element][q] + OrganicAtomHCount[atoms[a].organic_type] * vacuo_form_factors[Hydrogen][q];
-                double ff = vff - dummy_ff * exp(q_squared[q] * pivol23);
-                form_factors[offsets[a]][q] = ff;
-            }
-        }
+        positions[a] = atoms[a].position;
+        offsets[a] = atom2offset(atoms+a);
     }
     
     #pragma omp parallel for
-    for(size_t q = 0; q < len_grid; q++)
+    for(size_t q = 0; q < saxs_profile_length; q++)
     {
         double intensity = 0.0;
+        double q_value = saxs->q[q];
+        size_t ff_table_row = q * MAX_OFFSET;
         for(size_t a1 = 0; a1 < num_atoms; a1++)
         {
-            double ff1 = form_factors[offsets[a1]][q];
+            size_t a1_idx = q * MAX_OFFSET + atom2offset(atoms+a1);
+            double ff1 = formFactorTable->vacuo_form_factors[ff_table_row + offsets[a1]]
+                         - formFactorTable->dummy_form_factors[ff_table_row * dummy_options_count + offsets[a1] * dummy_options_count + dummy_offset]
+                         + per_atom_sasa[a1] * solvation_factor * formFactorTable->solvent_form_factors[q];
             for(size_t a2 = 0; a2 < num_atoms; a2++)
             {
                 if(a1 == a2)
                     intensity += ff1 * ff1;
                 else
                 {
-                    double ff2 = form_factors[offsets[a2]][q];
-                    if(q_grid[q] == 0.0)
+                    size_t a2_idx = q * MAX_OFFSET + atom2offset(atoms + a2);
+                    double ff2 = formFactorTable->vacuo_form_factors[ff_table_row + offsets[a1]]
+                                 - formFactorTable->dummy_form_factors[ff_table_row * dummy_options_count + offsets[a1] * dummy_options_count + dummy_offset]
+                                 + per_atom_sasa[a1] * solvation_factor * formFactorTable->solvent_form_factors[q];
+                    // Avoid problems with evaluation of the sinc function if q is approaching 0
+                    if(q_value < 0.0001)
                         intensity += ff1 * ff2;
                     else
                     {
-                        double qd = distance(atoms[a1].position, atoms[a2].position) * q_grid[q];
+                        double qd = distance(atoms[a1].position, atoms[a2].position) * q_value;
                         intensity += ff1 * ff2 * sin(qd) / qd;
                     }
                 }
             }
         }
-        intensities[q] = intensity;
+        saxs->i[q] = intensity;
     }
+    
+    free(offsets);
+    free(positions);
 }

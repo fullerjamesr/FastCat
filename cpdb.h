@@ -63,6 +63,7 @@ typedef enum OrganicAtomConfig
     N3H2,
     N4H3,
     O1H0,
+ //   O1H2, //WATER
     O2H0,
     O2H1,
     S2H0,
@@ -75,6 +76,7 @@ typedef enum OrganicAtomConfig
 extern const double OrganicAtomVdw[];
 extern const double OrganicAtomVolumes[];
 extern const unsigned int OrganicAtomHCount[];
+extern const AtomType OrganicAtomBaseElement[];
 
 typedef struct Atom
 {
@@ -100,24 +102,26 @@ size_t read_atoms_from_pdbfile(Atom** buffer, size_t buffer_size, FILE* source, 
 
 typedef struct NeighborList
 {
-    coord origin;
-    double edgle_length;
-    size_t dimensions[3];
-    size_t cell_lists_len;
-    size_t** cell_lists;
-    size_t* cells_len;
-    size_t* cell_assignments;
+    coord origin;               // The coordinates of the corner of the overall box that encloses all the atoms
+    double edge_length;         // The edge length of the individual cells
+    size_t dimensions[3];       // The number of cells [X, Y, Z] starting from `origin`
+    size_t cell_lists_len;      // The total number of cells (X * Y * Z)
+    size_t** cell_lists;        // For each cell, a list of the indices of atoms that belong to it
+    size_t* cells_len;          // The length of each list in `cell lists`
+    size_t* cell_assignments;   // `cell_assignments[a]` is the index in `cell lists` in which `atoms[a]` resides
 } NeighborList;
-size_t allocate_make_neighbor_list(NeighborList* nl, Atom* atoms, size_t num_atoms, double edge_length);
+size_t allocate_make_neighbor_list(NeighborList *nl, const Atom *atoms, const size_t num_atoms, const double edge_length);
 void free_neighborlist(NeighborList* nl);
-static inline size_t neighborlist_addressof(NeighborList* nl, size_t x, size_t y, size_t z)
-{
-    return x + (y * nl->dimensions[0]) + (z * nl->dimensions[0] * nl->dimensions[1]);
-}
 
 OrganicAtomConfig determine_bonding_config(const Atom* atom);
 void assign_organic_atom_types(Atom* atoms, size_t num_atoms);
 double get_vdw_radius(Atom* atom, bool implicit_hydrogen);
 double get_atom_volume(Atom* atom, bool implicit_hydrogen);
+
+
+double shrake_rupley_sasa(double* restrict sasa_per_atom, const double probe_radius,
+                          const Atom* restrict atoms, const size_t num_atoms, bool implicit_hydrogen,
+                          NeighborList* neighborList, coord* restrict sampling_vectors,
+                          const size_t num_vectors);
 
 #endif //FASTCAT_CPDB_H
