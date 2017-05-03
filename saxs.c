@@ -1,7 +1,7 @@
-#include <math.h>
 #include <stdlib.h>
+#include <math.h>
+#include <string.h>
 #include <assert.h>
-#include <time.h>
 #include "saxs.h"
 
 
@@ -45,7 +45,8 @@ static const double FormFactorConstants[30][7] =
     {2.648,0.02328,0.00102,0.00712,8.91E-05,4.61E-04,2.12E-04},
     {2.78,0.02398,7.35E-04,0.00677,7.09E-05,2.30E-04,5.28E-05}
 };
-//TODO: Having to increment z because Hydrogen = 0 will only confuse down the line
+//TODO: Having to increment z because Hydrogen = 0 will almost certainly be a source of confusion later
+//TODO: Have a think about how to speed this calculation up further
 double form_factor(unsigned int z, double q)
 {
     if(z < 31)
@@ -191,6 +192,8 @@ void populate_form_factor_table(FormFactorTable* const destination, const Atom* 
     free(exists_in_molecule);
 }
 
+
+//TODO: Consider moving the spooling out of positions and offsets to a separate function. This could also contain the form factor table.
 void unfitted_saxs(SaxsProfile* restrict saxs, const Atom* const restrict atoms, const double* const restrict per_atom_sasa, const size_t num_atoms,
                    const coord* restrict sampling_vectors, const size_t num_vectors,
                    const FormFactorTable* const formFactorTable, const size_t dummy_offset, const double solvation_factor)
@@ -241,49 +244,118 @@ void unfitted_saxs(SaxsProfile* restrict saxs, const Atom* const restrict atoms,
     free(positions);
 }
 
-/*
-for(size_t q = 0; q < len_grid; q++)
+void fitted_saxs(double* const restrict intensities, const double* const restrict q_values, const size_t profile_length,
+                 const Atom* const restrict atoms, const double* const restrict per_atom_sasa, const size_t num_atoms,
+                 const coord* restrict sampling_vectors, const size_t num_vectors,
+                 const FormFactorTable* const formFactorTable, const double min_hydration, const double max_hydration, const size_t num_hydration_samples)
 {
-    double intensity = malloc(sizeof(double) * d * h);
-    size_t ff_table_row = q * num_atoms;
-    for(size_t v = 0; v < num_vectors; v++)
+    // Sanity input checks for debugging
+    assert(intensities != NULL);
+    assert(q_values != NULL);
+    assert(atoms != NULL);
+    assert(per_atom_sasa != NULL);
+    assert(sampling_vectors != NULL);
+    assert(formFactorTable != NULL);
+    assert(num_hydration_samples > 0);
+    assert(num_atoms > 0);
+    
+    const size_t dummy_options_count = formFactorTable->dummy_options_count;
+    const double delta_hydration = (max_hydration - min_hydration) /num_hydration_samples;
+    
+    // spool out offsets and positions for better memory layout
+    coord* const restrict positions = malloc(sizeof(coord) * num_atoms);
+    size_t* const restrict offsets = malloc(sizeof(size_t) * num_atoms);
+    for(size_t a = 0; a < num_atoms; a++)
     {
-        double vacuum_cos_bucket = 0.0;
-        double vacuum_sin_bucket = 0.0;
-        double dummy_cos_bucket = malloc(sizeof(double) * d);
-        double dummy_sin_bucket = malloc(sizeof(double) * d);
-        double hydration_cos_bucket = 0.0;
-        double hydration_sin_bucket = 0.0;
-        
-        coord q_vector = vec_multiply(sampling_vectors[v], saxs->q[q]);
-        
-        for(size_t a = 0; a < num_atoms; a++)
-        {
-            double scat = dot_product(q_vector, positions[a]);
-            //TODO: Using the trig identity to get sin is faster on both gcc and icc, but we should find out if this
-            //      is still the case after accounting for the fact that we need to keep track of quadrant
-            double cos_scat = cos(scat);
-            double sin_scat = sin(scat);
-            
-            
-            double vacuum_ff = form_factor_per_atom[a + ff_table_row];
-            vacuum_cos_bucket += vacuum_ff * cos_scat;
-            vacuum_sin_bucket += vacuum_ff * sin_scat;
-            
-            double water_f = get water ff
-            hydration_cos_bucket += water_f * cos_scat;
-            hydration_sin_bucket += water_f * sin_scat;
-            
-            for each dummy possibility
-                update dummy_cos_bucket
-        }
-        for each d x h
-            intensity += the square of all values
+        positions[a] = atoms[a].position;
+        offsets[a] = atom2offset(atoms+a);
     }
-    for each d x h
-        saxs->i[q][d][h] = intensity[d][h] / num_vectors;
+
+    double* restrict intensity = calloc(dummy_options_count * num_hydration_samples, sizeof(double));
+    double* restrict dummy_cos_bucket = calloc(dummy_options_count, sizeof(double));
+    double* restrict dummy_sin_bucket = calloc(dummy_options_count, sizeof(double));
+    assert(intensity[0] == 0.0);
+    assert(dummy_cos_bucket[0] == 0.0);
+    assert(dummy_sin_bucket[0] == 0.0);
+    
+    #pragma omp parallel for
+    for(size_t q = 0; q < profile_length; q++)
+    {
+        size_t ff_table_row = q * MAX_OFFSET;
+        double* restrict vacuo_form_factors = formFactorTable->vacuo_form_factors + ff_table_row;
+        for(size_t v = 0; v < num_vectors; v++)
+        {
+            coord q_vector = vec_multiply(sampling_vectors[v], q_values[q]);
+            
+            double vacuum_cos_bucket = 0.0;
+            double vacuum_sin_bucket = 0.0;
+            double hydration_cos_bucket = 0.0;
+            double hydration_sin_bucket = 0.0;
+            
+            for(size_t a = 0; a < num_atoms; a++)
+            {
+                double scat = dot_product(q_vector, positions[a]);
+                double cos_scat = cos(scat);
+                double sin_scat = sin(scat);
+    
+                double vacuum_ff = vacuo_form_factors[ offsets[a] ];
+                vacuum_cos_bucket += vacuum_ff * cos_scat;
+                vacuum_sin_bucket += vacuum_ff * sin_scat;
+    
+                double hydration_ff = per_atom_sasa[a] * formFactorTable->solvent_form_factors[q];
+                hydration_cos_bucket += hydration_ff * cos_scat;
+                hydration_sin_bucket += hydration_ff * sin_scat;
+                
+                double* restrict dummy_ffs = formFactorTable->dummy_form_factors + ff_table_row * dummy_options_count + offsets[a] * dummy_options_count;
+                for(size_t d = 0; d < dummy_options_count; d++)
+                {
+                    double dummy_ff = dummy_ffs[d];
+                    dummy_cos_bucket[d] += dummy_ff * cos_scat;
+                    dummy_sin_bucket[d] += dummy_ff * sin_scat;
+                }
+            }
+            
+            for(size_t d = 0; d < dummy_options_count; d++)
+            {
+                for(size_t h = 0; h < num_hydration_samples; h++)
+                {
+                    double cosine_term = vacuum_cos_bucket - dummy_cos_bucket[d] +
+                                         hydration_cos_bucket * (min_hydration + delta_hydration * h);
+                    double sin_term = vacuum_sin_bucket - dummy_sin_bucket[d] +
+                                      hydration_sin_bucket * (min_hydration + delta_hydration * h);
+                    intensity[d * num_hydration_samples + h] += cosine_term * cosine_term + sin_term * sin_term;
+                }
+            }
+    
+            memset(dummy_cos_bucket, 0, sizeof(double) * dummy_options_count);
+            memset(dummy_sin_bucket, 0, sizeof(double) * dummy_options_count);
+            assert(dummy_cos_bucket[0] == 0.0);
+            assert(dummy_sin_bucket[0] == 0.0);
+        }
+        
+        // Spool the results of the calculation back into `intensities`, the caller-supplied destination array
+        // The memory access pattern here is bad in order to keep the memory access pattern of the previous loops good,
+        // because dummy_options_count * num_hydration_samples should be <<<< num_vectors * num_atoms
+        for(size_t d = 0; d < dummy_options_count; d++)
+        {
+            size_t inner_dim_offset = d * num_hydration_samples;
+            size_t outer_dim_offset = inner_dim_offset * profile_length + q;
+            for(size_t h = 0; h < num_hydration_samples; h++)
+            {
+                intensities[outer_dim_offset + h * profile_length] = intensity[inner_dim_offset + h] / num_vectors;
+            }
+        }
+    
+        memset(intensity, 0, sizeof(double) * dummy_options_count * num_hydration_samples);
+        assert(intensity[0] == 0.0);
+    }
+    
+    free(offsets);
+    free(positions);
+    free(intensity);
+    free(dummy_cos_bucket);
+    free(dummy_sin_bucket);
 }
-*/
 
 void unfitted_debeye(SaxsProfile* restrict saxs, const Atom* const restrict atoms, const double* const restrict per_atom_sasa, const size_t num_atoms,
                      const FormFactorTable* const formFactorTable, const size_t dummy_offset, const double solvation_factor)
@@ -308,7 +380,6 @@ void unfitted_debeye(SaxsProfile* restrict saxs, const Atom* const restrict atom
         size_t ff_table_row = q * MAX_OFFSET;
         for(size_t a1 = 0; a1 < num_atoms; a1++)
         {
-            size_t a1_idx = q * MAX_OFFSET + atom2offset(atoms+a1);
             double ff1 = formFactorTable->vacuo_form_factors[ff_table_row + offsets[a1]]
                          - formFactorTable->dummy_form_factors[ff_table_row * dummy_options_count + offsets[a1] * dummy_options_count + dummy_offset]
                          + per_atom_sasa[a1] * solvation_factor * formFactorTable->solvent_form_factors[q];
@@ -318,7 +389,6 @@ void unfitted_debeye(SaxsProfile* restrict saxs, const Atom* const restrict atom
                     intensity += ff1 * ff1;
                 else
                 {
-                    size_t a2_idx = q * MAX_OFFSET + atom2offset(atoms + a2);
                     double ff2 = formFactorTable->vacuo_form_factors[ff_table_row + offsets[a1]]
                                  - formFactorTable->dummy_form_factors[ff_table_row * dummy_options_count + offsets[a1] * dummy_options_count + dummy_offset]
                                  + per_atom_sasa[a1] * solvation_factor * formFactorTable->solvent_form_factors[q];

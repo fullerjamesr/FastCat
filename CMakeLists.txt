@@ -7,5 +7,5 @@ set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native -ffast-math")
 set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -flto -fopenmp")
 
-set(SOURCE_FILES main.c fileio.c fileio.h coord.h coord.c cpdb.c cpdb.h atominfo.h saxs.c saxs.c saxs.h atominfo.c)
+set(SOURCE_FILES main.c fileio.c fileio.h coord.h coord.c cpdb.c cpdb.h atominfo.h saxs.c saxs.c saxs.h atominfo.c argparse.c argparse.h)
 add_executable(FastCat ${SOURCE_FILES})

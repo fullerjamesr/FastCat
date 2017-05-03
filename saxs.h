@@ -38,10 +38,10 @@ void unfitted_saxs(SaxsProfile* restrict saxs, const Atom* const restrict atoms,
                    const coord* restrict sampling_vectors, const size_t num_vectors,
                    const FormFactorTable* const formFactorTable, const size_t dummy_offset, const double solvation_factor);
 
-void fitted_saxs(double* restrict intensities, const double* restrict q_grid, const size_t len_grid,
-                   const Atom* restrict atoms, const double* restrict per_atom_sasa, const size_t num_atoms,
-                   const coord* restrict sampling_vectors, const size_t num_vectors,
-                   const double solvent_density, const double radius_adjustment);
+void fitted_saxs(double* const restrict intensities, const double* const restrict q_values, const size_t profile_length,
+                 const Atom* const restrict atoms, const double* const restrict per_atom_sasa, const size_t num_atoms,
+                 const coord* restrict sampling_vectors, const size_t num_vectors,
+                 const FormFactorTable* const formFactorTable, const double min_hydration, const double max_hydration, const size_t num_hydration_samples);
 
 void unfitted_debeye(SaxsProfile* restrict saxs, const Atom* const restrict atoms, const double* const restrict per_atom_sasa, const size_t num_atoms,
                      const FormFactorTable* const formFactorTable, const size_t dummy_offset, const double solvation_factor);
