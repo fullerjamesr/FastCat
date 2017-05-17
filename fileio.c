@@ -1,5 +1,7 @@
 #include <assert.h>
 #include <stdlib.h>
+#include <ctype.h>
+#include <string.h>
 #include "fileio.h"
 
 /*
@@ -16,6 +18,7 @@ Returns:
     The number of characters that were written into *buffer, including the CString null terminator.
     If this returns 0, something went wrong.
 */
+//TODO: this function responds to EOF and a blank line identically when `incl_newline` is false. This is not good.
 size_t readline(char** buffer, size_t* size, FILE* source, bool incl_newline)
 {
     size_t dest_size = *size;
@@ -61,4 +64,23 @@ size_t readline(char** buffer, size_t* size, FILE* source, bool incl_newline)
     *buffer = str;
     *size = dest_size;
     return chars_written;
+}
+
+//TODO: This is a not very good stopgap for demonstration purposes.
+size_t read_3_column_data(double** buffer, size_t nrows, FILE* source)
+{
+    size_t rows = 0;
+    //size_t line_buffer_size = sizeof(char) * 256;
+    //char* line = malloc(line_buffer_size);
+    double one, two, three;
+    while(!ferror(source) && !feof(source) && rows < nrows)
+    {
+        if(fscanf(source, "%lf %lf %lf\n", &one, &two, &three) > 0)
+        {
+            buffer[0][rows] = one;
+            buffer[1][rows] = two;
+            buffer[2][rows++] = three;
+        }
+    }
+    return rows;
 }

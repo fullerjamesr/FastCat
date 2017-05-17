@@ -271,90 +271,96 @@ void fitted_saxs(double* const restrict intensities, const double* const restric
         offsets[a] = atom2offset(atoms+a);
     }
 
-    double* restrict intensity = calloc(dummy_options_count * num_hydration_samples, sizeof(double));
-    double* restrict dummy_cos_bucket = calloc(dummy_options_count, sizeof(double));
-    double* restrict dummy_sin_bucket = calloc(dummy_options_count, sizeof(double));
-    assert(intensity[0] == 0.0);
-    assert(dummy_cos_bucket[0] == 0.0);
-    assert(dummy_sin_bucket[0] == 0.0);
-    
-    #pragma omp parallel for
-    for(size_t q = 0; q < profile_length; q++)
+    #pragma omp parallel
     {
-        size_t ff_table_row = q * MAX_OFFSET;
-        double* restrict vacuo_form_factors = formFactorTable->vacuo_form_factors + ff_table_row;
-        for(size_t v = 0; v < num_vectors; v++)
+        double *restrict intensity = calloc(dummy_options_count * num_hydration_samples, sizeof(double));
+        double *restrict dummy_cos_bucket = calloc(dummy_options_count, sizeof(double));
+        double *restrict dummy_sin_bucket = calloc(dummy_options_count, sizeof(double));
+        // in debug mode, check to make sure that the current platform represents the double value of 0.0 as zeroed memory
+        assert(intensity[0] == 0.0);
+
+        #pragma omp for
+        for(size_t q = 0; q < profile_length; q++)
         {
-            coord q_vector = vec_multiply(sampling_vectors[v], q_values[q]);
-            
-            double vacuum_cos_bucket = 0.0;
-            double vacuum_sin_bucket = 0.0;
-            double hydration_cos_bucket = 0.0;
-            double hydration_sin_bucket = 0.0;
-            
-            for(size_t a = 0; a < num_atoms; a++)
+            size_t ff_table_row = q * MAX_OFFSET;
+            double *restrict vacuo_form_factors = formFactorTable->vacuo_form_factors + ff_table_row;
+            for(size_t v = 0; v < num_vectors; v++)
             {
-                double scat = dot_product(q_vector, positions[a]);
-                double cos_scat = cos(scat);
-                double sin_scat = sin(scat);
-    
-                double vacuum_ff = vacuo_form_factors[ offsets[a] ];
-                vacuum_cos_bucket += vacuum_ff * cos_scat;
-                vacuum_sin_bucket += vacuum_ff * sin_scat;
-    
-                double hydration_ff = per_atom_sasa[a] * formFactorTable->solvent_form_factors[q];
-                hydration_cos_bucket += hydration_ff * cos_scat;
-                hydration_sin_bucket += hydration_ff * sin_scat;
+                coord q_vector = vec_multiply(sampling_vectors[v], q_values[q]);
                 
-                double* restrict dummy_ffs = formFactorTable->dummy_form_factors + ff_table_row * dummy_options_count + offsets[a] * dummy_options_count;
+                double vacuum_cos_bucket = 0.0;
+                double vacuum_sin_bucket = 0.0;
+                double hydration_cos_bucket = 0.0;
+                double hydration_sin_bucket = 0.0;
+                
+                for(size_t a = 0; a < num_atoms; a++)
+                {
+                    double scat = dot_product(q_vector, positions[a]);
+                    double cos_scat = cos(scat);
+                    double sin_scat = sin(scat);
+                    
+                    double vacuum_ff = vacuo_form_factors[offsets[a]];
+                    vacuum_cos_bucket += vacuum_ff * cos_scat;
+                    vacuum_sin_bucket += vacuum_ff * sin_scat;
+                    
+                    double hydration_ff = per_atom_sasa[a] * formFactorTable->solvent_form_factors[q];
+                    hydration_cos_bucket += hydration_ff * cos_scat;
+                    hydration_sin_bucket += hydration_ff * sin_scat;
+                    
+                    double *restrict dummy_ffs =
+                            formFactorTable->dummy_form_factors + ff_table_row * dummy_options_count +
+                            offsets[a] * dummy_options_count;
+                    for(size_t d = 0; d < dummy_options_count; d++)
+                    {
+                        double dummy_ff = dummy_ffs[d];
+                        dummy_cos_bucket[d] += dummy_ff * cos_scat;
+                        dummy_sin_bucket[d] += dummy_ff * sin_scat;
+                    }
+                }
+                
                 for(size_t d = 0; d < dummy_options_count; d++)
                 {
-                    double dummy_ff = dummy_ffs[d];
-                    dummy_cos_bucket[d] += dummy_ff * cos_scat;
-                    dummy_sin_bucket[d] += dummy_ff * sin_scat;
+                    for(size_t h = 0; h < num_hydration_samples; h++)
+                    {
+                        double cosine_term = vacuum_cos_bucket - dummy_cos_bucket[d] +
+                                             hydration_cos_bucket * (min_hydration + delta_hydration * h);
+                        double sin_term = vacuum_sin_bucket - dummy_sin_bucket[d] +
+                                          hydration_sin_bucket * (min_hydration + delta_hydration * h);
+                        intensity[d * num_hydration_samples + h] += cosine_term * cosine_term + sin_term * sin_term;
+                    }
+                }
+                
+                memset(dummy_cos_bucket, 0, sizeof(double) * dummy_options_count);
+                memset(dummy_sin_bucket, 0, sizeof(double) * dummy_options_count);
+                // same check as above: make sure that zeroed memory represents the double value of 0.0
+                assert(dummy_cos_bucket[0] == 0.0);
+            }
+            
+            // Spool the results of the calculation back into `intensities`, the caller-supplied destination array
+            // The memory access pattern here is bad in order to keep the memory access pattern of the previous loops good,
+            // because dummy_options_count * num_hydration_samples should be <<<< num_vectors * num_atoms
+            for(size_t d = 0; d < dummy_options_count; d++)
+            {
+                size_t inner_dim_offset = d * num_hydration_samples;
+                size_t outer_dim_offset = inner_dim_offset * profile_length + q;
+                for(size_t h = 0; h < num_hydration_samples; h++)
+                {
+                    intensities[outer_dim_offset + h * profile_length] = intensity[inner_dim_offset + h] / num_vectors;
                 }
             }
             
-            for(size_t d = 0; d < dummy_options_count; d++)
-            {
-                for(size_t h = 0; h < num_hydration_samples; h++)
-                {
-                    double cosine_term = vacuum_cos_bucket - dummy_cos_bucket[d] +
-                                         hydration_cos_bucket * (min_hydration + delta_hydration * h);
-                    double sin_term = vacuum_sin_bucket - dummy_sin_bucket[d] +
-                                      hydration_sin_bucket * (min_hydration + delta_hydration * h);
-                    intensity[d * num_hydration_samples + h] += cosine_term * cosine_term + sin_term * sin_term;
-                }
-            }
-    
-            memset(dummy_cos_bucket, 0, sizeof(double) * dummy_options_count);
-            memset(dummy_sin_bucket, 0, sizeof(double) * dummy_options_count);
-            assert(dummy_cos_bucket[0] == 0.0);
-            assert(dummy_sin_bucket[0] == 0.0);
+            memset(intensity, 0, sizeof(double) * dummy_options_count * num_hydration_samples);
+            // same check as above: make sure that zeroed memory represents the double value of 0.0
+            assert(intensity[0] == 0.0);
         }
         
-        // Spool the results of the calculation back into `intensities`, the caller-supplied destination array
-        // The memory access pattern here is bad in order to keep the memory access pattern of the previous loops good,
-        // because dummy_options_count * num_hydration_samples should be <<<< num_vectors * num_atoms
-        for(size_t d = 0; d < dummy_options_count; d++)
-        {
-            size_t inner_dim_offset = d * num_hydration_samples;
-            size_t outer_dim_offset = inner_dim_offset * profile_length + q;
-            for(size_t h = 0; h < num_hydration_samples; h++)
-            {
-                intensities[outer_dim_offset + h * profile_length] = intensity[inner_dim_offset + h] / num_vectors;
-            }
-        }
-    
-        memset(intensity, 0, sizeof(double) * dummy_options_count * num_hydration_samples);
-        assert(intensity[0] == 0.0);
+        free(intensity);
+        free(dummy_cos_bucket);
+        free(dummy_sin_bucket);
     }
     
     free(offsets);
     free(positions);
-    free(intensity);
-    free(dummy_cos_bucket);
-    free(dummy_sin_bucket);
 }
 
 void unfitted_debeye(SaxsProfile* restrict saxs, const Atom* const restrict atoms, const double* const restrict per_atom_sasa, const size_t num_atoms,
@@ -408,4 +414,58 @@ void unfitted_debeye(SaxsProfile* restrict saxs, const Atom* const restrict atom
     
     free(offsets);
     free(positions);
+}
+
+ProfileScaleResult find_chisq_scale_factor(const SaxsProfile *const restrict reference,
+                                           const SaxsProfile *const restrict to_move)
+{
+    assert(reference->length <= to_move->length);
+    assert(reference->e);
+    
+    double modelsquared_sum = 0.0;
+    double model_exp_sum = 0.0;
+    for(size_t i = 0; i < reference->length; i++)
+    {
+        modelsquared_sum += to_move->i[i] * to_move->i[i] / reference->e[i] / reference->e[i];
+        model_exp_sum += to_move->i[i] * reference->i[i] / reference->e[i] / reference->e[i];
+    }
+    
+    ProfileScaleResult result = {.constant = model_exp_sum / modelsquared_sum, .offset = 0.0};
+    return result;
+}
+
+ProfileScaleResult find_chisq_scale_factor_with_offset(const SaxsProfile *const restrict reference,
+                                                       const SaxsProfile *const restrict to_move)
+{
+    assert(reference->length <= to_move->length);
+    assert(reference->e);
+    
+    double modelsquared_sum = 0.0;
+    double model_sum = 0.0;
+    double model_exp_sum = 0.0;
+    double exp_sum = 0.0;
+    
+    for(size_t i = 0; i < reference->length; i++)
+    {
+        modelsquared_sum += to_move->i[i] * to_move->i[i] / reference->e[i] / reference->e[i];
+        model_sum += to_move->i[i] / reference->e[i] / reference->e[i];
+        model_exp_sum += to_move->i[i] * reference->i[i] / reference->e[i] / reference->e[i];
+        exp_sum += reference->i[i] / reference->e[i] / reference->e[i];
+    }
+    
+    //TODO: I MESSED UP, THIS IS WRONG
+    ProfileScaleResult result = { .constant = (exp_sum * model_sum - model_exp_sum * reference->length) / (model_sum * model_sum - modelsquared_sum * reference->length),
+                                  .offset = (exp_sum * modelsquared_sum - model_exp_sum * model_sum) / (model_sum * model_sum - modelsquared_sum * reference->length)};
+    return result;
+}
+
+double chi_square(const SaxsProfile* const restrict experimental, const SaxsProfile* const restrict model)
+{
+    double sum = 0.0;
+    for(size_t i = 0; i < experimental->length; i++)
+    {
+        double delta = (experimental->i[i] - model->i[i]) / experimental->e[i];
+        sum += delta * delta;
+    }
+    return sum / experimental->length;
 }

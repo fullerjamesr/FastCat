@@ -11,8 +11,13 @@ typedef struct SaxsProfile
     double* restrict e; // Errors, can be null for theoretical profiles
     
     size_t length;      // The length of the q, i, e vectors
-    double q_spacing;   // The spacing between Q values
 } SaxsProfile;
+
+typedef struct ProfileScaleResult
+{
+    double constant;
+    double offset;
+} ProfileScaleResult;
 
 typedef struct FormFactorTable
 {
@@ -22,6 +27,14 @@ typedef struct FormFactorTable
     double* restrict solvent_form_factors;
 } FormFactorTable;
 
+ProfileScaleResult find_chisq_scale_factor(const SaxsProfile *const restrict reference,
+                                           const SaxsProfile *const restrict to_move);
+ProfileScaleResult find_chisq_scale_factor_with_offset(const SaxsProfile *const restrict reference,
+                                                       const SaxsProfile *const restrict to_move);
+
+double chi_square(const SaxsProfile* const restrict experimental, const SaxsProfile* const restrict model);
+
+double chi_square_fit(const SaxsProfile* const restrict experimental, const SaxsProfile* const restrict model);
 
 double fast_form_factor(unsigned int z, double q);
 double form_factor(unsigned int z, double q);

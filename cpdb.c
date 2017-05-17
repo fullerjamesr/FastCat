@@ -184,7 +184,8 @@ bool parse_pdb_line_into_atom(const char* line, Atom * atom)
     atom = initialize_atom(atom);
     
     // COLS 7-11 are the integer serial number
-    atom->serial=atoi(line + 6);
+    //TODO: convert to strtol; apparently it's OK to have negative values for this?
+    atom->serial = (uint32_t) atoi(line + 6);
     // COLS 13-16 are the atom name
     strncpy(atom->name, line + 12, 4);
     atom->name[4] = '\0';
@@ -265,28 +266,37 @@ bool parse_pdb_line_into_atom(const char* line, Atom * atom)
             }
         }
     }
-    else // ... but if needed it can be inferred from name
+    // ... but if needed it can be inferred from name
+    else
     {
-        // justification here is a nightmare of rules
-        // first try: if the first character is blank, then the character at position 1 is the single letter element
-        if(isspace(atom->name[0]))
+        // justification here is a nightmare of rules:
+        // (1) if the first character is blank, then the element has a single letter symbol and is found at the second position
+        // (2) if the last two characters are blank, then the element has a two letter symbol given by the first two positions
+        // (3) finally, if neither of the above are true, the elements has a single letter symbol which is found at the first position
+        int leading_space = isspace(atom->name[0]) ? 1 : 0;
+        if(leading_space || (isdigit(atom->name[2]) && isdigit(atom->name[3])))
         {
-            for (int i = 0; i < (AtomTypeCount - 1); i++)
+            int i;
+            for(i = 0; i < (AtomTypeCount - 1); i++)
             {
                 // break on non-single-letter
                 if(strlen(AtomicSymbolStrings[i]) > 1)
                     continue;
-                if(atom->name[1] == AtomicSymbolStrings[i][0])
+                if(atom->name[leading_space] == AtomicSymbolStrings[i][0])
                 {
                     atom->element = (AtomType) i;
                     break;
                 }
             }
+    
+            if(i >= (AtomTypeCount - 1))
+                // there was no element specified and the atom name did not provide anything useful
+                return false;
         }
-        else // ...else if the leading character is not blank, then scan backwards because two letter codes should win
+        else
         {
             int i;
-            for(i = AtomTypeCount-2; i >= 0; i--)
+            for(i = AtomTypeCount - 2; i >= 0; i--)
             {
                 if(strstr(atom->name, AtomicSymbolStrings[i]) == atom->name)
                 {
@@ -928,13 +938,13 @@ double shrake_rupley_sasa(double* restrict sasa_per_atom, const double probe_rad
         local_nl = true;
     }
     
-    // An array to store the shifted sampling points (get's re-written every loop)
+    // An array to store the shifted sampling points (gets re-written every loop)
     coord* sampling_points = malloc(sizeof(coord) * num_vectors);
     
     for(size_t i = 0; i < neighborList->cell_lists_len; i++)
     {
-        // cells adjacent to `i` are any of the 26 cells with (X, Y, Z) are all either == I or == I+/- 1
-        // but also leave space for the self-cell
+        // cells adjacent to `i` are any of the 26 cells with (X, Y, Z) that differ by no more than 1
+        // here the first slot is reserved for the self
         size_t adjacent_cells[27] = { i };
         size_t adjacent_count = neighborlist_get_adjacent_cell_indices(adjacent_cells + 1, i, neighborList) + 1;
         
@@ -945,14 +955,15 @@ double shrake_rupley_sasa(double* restrict sasa_per_atom, const double probe_rad
             Atom atom = atoms[atom_idx];
             // for solvent accessible surface, the test is "What part of a sphere of radius (vdw + probe) is outside of
             // all neighboring atoms sphere's of (radius + probe)?"
-            double atom_radius = get_vdw_radius(&atom, implicit_hydrogen) + probe_radius;
+            double atom_radius = get_vdw_radius(&atom, implicit_hydrogen);
+            double atom_radius_with_probe = atom_radius + probe_radius;
             
             // The count of how many are exposed
             size_t exposed_count = num_vectors;
             
             // Generate sampling points
             for(size_t v = 0; v < num_vectors; v++)
-                sampling_points[v] = vec_add(atom.position, vec_multiply(sampling_vectors[v], atom_radius));
+                sampling_points[v] = vec_add(atom.position, vec_multiply(sampling_vectors[v], atom_radius_with_probe));
             
             // for every sampling point on that atom...
             for(size_t v = 0; v < num_vectors; v++)
@@ -965,7 +976,7 @@ double shrake_rupley_sasa(double* restrict sasa_per_atom, const double probe_rad
                     size_t current_cell_idx = adjacent_cells[j];
                     assert(current_cell_idx < neighborList->cell_lists_len);
                     size_t* cell = neighborList->cell_lists[current_cell_idx];
-                    // for every neighboring atoms in neighboring cells...
+                    // for every neighboring atom in neighboring cells...
                     for(size_t k = 0; k <  neighborList->cells_len[current_cell_idx] && exposed; k++)
                     {
                         size_t neighbor_idx = cell[k];
@@ -979,7 +990,6 @@ double shrake_rupley_sasa(double* restrict sasa_per_atom, const double probe_rad
                         }
                     }
                 }
-                    
             }
             
             // SASA is approximately (number of exposed points / total points) * atom surface area

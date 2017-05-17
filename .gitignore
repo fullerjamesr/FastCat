@@ -1,2 +1,5 @@
 cmake-*
 .idea
+!4fcy.pdb
+*.pdb*
+*.dat
