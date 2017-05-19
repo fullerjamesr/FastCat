@@ -528,14 +528,22 @@ OrganicAtomConfig determine_bonding_config(const Atom* atom)
     if(atom->res_type == UnknownRes)
         return UnknownBonds;
     
+    // Peptide backbone
     if(strcmp(atom->name," CA ") == 0)
         return C4H1;
     else if(strcmp(atom->name," C  ") == 0)
         return C3H0;
     else if(strcmp(atom->name," O  ") == 0)
         return O1H0;
+    else if(strcmp(atom->name," OXT") == 0)
+        return O1H0;
+    else if(strcmp(atom->name," OT1") == 0)
+        return O1H0;
+    else if(strcmp(atom->name," OT2") == 0)
+        return O1H0;
     else if(strcmp(atom->name," N  ") == 0)
         return N3H1;
+    //TODO: what is the most straightforward way to determine N-terminal-ness? Possibly related to the brute force above
     
     switch(atom->res_type)
     {
