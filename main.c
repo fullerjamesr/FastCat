@@ -1,3 +1,4 @@
+#define __USE_MINGW_ANSI_STDIO 1
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -34,16 +35,21 @@ void write_saxs(FILE* dest, const double* q, const double* i, const double* e, c
 int main(int argc, const char** argv)
 {
     /*
+     *
      * Usage
+     *
      */
     const char usage[] = "fastcat [options] structure.pdb [experimental scattering.dat]";
-    const char epilog[] = "fastcat is developed by James Fuller (fullerj@uchicago.edu)";
+    const char epilog[] = "fastcat is developed by James Fuller https://github.com/fullerjamesr";
     
     /*
+     *
      * Arguments
+     *
      */
     bool QUIET = false;
     char* MODE = "fastcat";
+    bool OFFSET = false;
     int Q_POINTS = 501;
     double DELTA_Q = 0.001;
     int GV_POINTS = 149;
@@ -56,7 +62,8 @@ int main(int argc, const char** argv)
     double HYDRATION_MAX = 4.0;
     int SASA_POINTS = 99;
 #ifdef _OPENMP
-    int NUM_THREADS = omp_get_num_procs();
+    char* threads_str = getenv("OMP_NUM_THREADS");
+    int NUM_THREADS = threads_str ? abs(atoi(threads_str)) : omp_get_num_procs();
 #endif
     
     ArgumentOption options[] =
@@ -64,6 +71,7 @@ int main(int argc, const char** argv)
         OPT_HELP("print usage and exit"),
         OPT_BOOLEAN(0, "quiet", &QUIET, "suppress standard output"),
         OPT_STRING('m', "mode", &MODE, "method to compute scattering (one of `fastcat` or `fastcat-search` or `debeye`"),
+        OPT_BOOLEAN('o', "offset", &OFFSET, "when fitting profiles, fit a constant offset added to the experimental data to improve the fit"),
         OPT_INTEGER('q', "profile_points", &Q_POINTS, "number of points in the calculated scattering profile"),
         OPT_DOUBLE('d', "delta_q", &DELTA_Q, "spacing between points in the calculated scattering profile"),
         OPT_INTEGER('n', "sampling_vectors", &GV_POINTS, "number of scattering vectors to sample during profile calculation"),
@@ -88,9 +96,14 @@ int main(int argc, const char** argv)
     omp_set_num_threads(NUM_THREADS);
 #endif
     
+    
     /*
-     * Read in PDB file and [potential] .dat file
+     *
+     * Read in PDB and (potential) data file.
+     * The data file, if present, overrides any command line arguments for the q-grid
+     *
      */
+    // In theory, if I were to ever support multiple PDB or data files at once, sorting out those files would go below.
     const char* pdb_filename = "4fcy.pdb";
     const char* dat_filename = "4fcy.dat";
     for(size_t i = 0; i < (size_t) argc; i++)
@@ -108,34 +121,48 @@ int main(int argc, const char** argv)
     }
     
     FILE* pdb_file_handle = fopen(pdb_filename, "r");
+    if(!pdb_file_handle)
+    {
+        fprintf(stderr, "error: could not open PDB file %s\n", pdb_filename);
+        exit(1);
+    }
     FILE* dat_file_handle = fopen(dat_filename, "r");
     if(!pdb_file_handle)
     {
-        fprintf(stderr, "error: could not open file %s\n", pdb_filename);
+        fprintf(stderr, "error: could not open experimental data file %s\n", pdb_filename);
         exit(1);
     }
     
     double* experimental_q = NULL;
     double* experimental_i = NULL;
     double* experimental_e = NULL;
-    SaxsProfile experimental_data;
+    size_t real_profile_size = (size_t)Q_POINTS;
     if(dat_file_handle)
     {
         experimental_q = malloc(sizeof(double) * 1024);
         experimental_i = malloc(sizeof(double) * 1024);
         experimental_e = malloc(sizeof(double) * 1024);
-        experimental_data.q = experimental_q;
-        experimental_data.i = experimental_i;
-        experimental_data.e = experimental_e;
-        experimental_data.length = 1024;
         double* data[3] = { experimental_q, experimental_i, experimental_e};
-        size_t real_size = read_3_column_data(data, 1024, dat_file_handle);
-        experimental_data.length = real_size;
-        Q_POINTS = (int) real_size;
+        real_profile_size = read_3_column_data(data, 1024, dat_file_handle);
         fclose(dat_file_handle);
+        
         if(!QUIET)
-            printf("Read %lu experimental data points from %s\n", (unsigned long)real_size, dat_filename);
+            printf("Read %lu experimental data points from %s\n", (unsigned long)real_profile_size, dat_filename);
+       
+        Q_POINTS = (int)real_profile_size;
+        DELTA_Q = experimental_q[1] - experimental_q[0];
     }
+    else
+    {
+        experimental_q = malloc(sizeof(double) * Q_POINTS);
+        experimental_i = malloc(sizeof(double) * Q_POINTS);
+        for(size_t i = 0; i < Q_POINTS; i++)
+            experimental_q[i] = DELTA_Q * i;
+    }
+    SaxsProfile experimental_data = { .q = experimental_q, .i = experimental_i, .e = experimental_e, .length = real_profile_size };
+    
+    // Printing the status of all options can finally be done here because we know if the Q_GRID is specified by experimental data
+    print_state(&argParseInfo);
     
     size_t buffsize = 500;
     Atom* atoms = malloc(sizeof(Atom) * buffsize);
@@ -143,7 +170,7 @@ int main(int argc, const char** argv)
     fclose(pdb_file_handle);
     if(!QUIET)
     {
-        printf("Read %lu atoms from %s\n", (unsigned long) atoms_read, pdb_filename);
+        printf("\nRead %lu atoms from %s\n", (unsigned long) atoms_read, pdb_filename);
         printf("Determining bonding configuration...");
         fflush(stdout);
     }
@@ -179,28 +206,19 @@ int main(int argc, const char** argv)
         fflush(stdout);
     }
     
-    double* q;
-    if(dat_file_handle)
-        q = experimental_q;
-    else
-    {
-        q = malloc(sizeof(double) * Q_POINTS);
-        for(size_t i = 0; i < Q_POINTS; i++)
-            q[i] = DELTA_Q * i;
-    }
     FormFactorTable formFactorTable;
-    allocate_form_factor_table(&formFactorTable, (size_t)Q_POINTS, (size_t)RADIUS_SAMPLES);
-    populate_form_factor_table(&formFactorTable, atoms, atoms_read, q, (size_t)Q_POINTS, RADIUS_MIN, RADIUS_MAX, (size_t)RADIUS_SAMPLES, SOLVENT_DENSITY);
+    allocate_form_factor_table(&formFactorTable, real_profile_size, (size_t)RADIUS_SAMPLES);
+    populate_form_factor_table(&formFactorTable, atoms, atoms_read, experimental_q, real_profile_size, RADIUS_MIN, RADIUS_MAX, (size_t)RADIUS_SAMPLES, SOLVENT_DENSITY);
     if(!QUIET)
         puts("done");
     
     SaxsProfile calculated_profile;
-    double* intensities;
+;
     if(dat_file_handle)
     {
         if(!QUIET)
             fputs("Enumerating scattering profiles...", stdout);
-        intensities = malloc(sizeof(double) * experimental_data.length * RADIUS_SAMPLES * HYDRATION_SAMPLES);
+        double* intensities = malloc(sizeof(double) * experimental_data.length * RADIUS_SAMPLES * HYDRATION_SAMPLES);
         double* intensities_marker = intensities;
         SaxsProfile* profiles = malloc(sizeof(SaxsProfile) * RADIUS_SAMPLES * HYDRATION_SAMPLES);
         for(size_t d = 0; d < RADIUS_SAMPLES; d++)
@@ -214,34 +232,39 @@ int main(int argc, const char** argv)
                 intensities_marker += experimental_data.length;
             }
         }
-        fitted_saxs(intensities, q, experimental_data.length, atoms, per_atom_sasa, atoms_read, sampling_vectors, (size_t)GV_POINTS, &formFactorTable, HYDRATION_MIN, HYDRATION_MAX, (size_t)HYDRATION_SAMPLES);
+        fitted_saxs(intensities, experimental_q, experimental_data.length, atoms, per_atom_sasa, atoms_read, sampling_vectors, (size_t)GV_POINTS, &formFactorTable, HYDRATION_MIN, HYDRATION_MAX, (size_t)HYDRATION_SAMPLES);
 
         size_t best_d = 0;
         size_t best_h = 0;
         double best_chisq = DBL_MAX;
+        ProfileScaleResult best_scale = { .constant = 0.0, .offset = 0.0 };
         for(size_t d = 0; d < RADIUS_SAMPLES; d++)
         {
             for(size_t h = 0; h < HYDRATION_SAMPLES; h++)
             {
                 SaxsProfile* model = profiles + d * HYDRATION_SAMPLES + h;
-                ProfileScaleResult scale_factors = find_chisq_scale_factor(&experimental_data, model);
+                ProfileScaleResult scale_factors = OFFSET
+                                                   ? find_chisq_scale_factor_with_offset(&experimental_data, model)
+                                                   : find_chisq_scale_factor(&experimental_data, model);
                 for(size_t i = 0; i < experimental_data.length; i++)
-                    model->i[i] *= scale_factors.constant;
-                double score = chi_square(&experimental_data, profiles + d * HYDRATION_SAMPLES + h);
+                    model->i[i] = model->i[i] * scale_factors.constant - scale_factors.offset;
+                double score = chi_square(&experimental_data, model);
                 if(score < best_chisq)
                 {
                     best_d = d;
                     best_h = h;
                     best_chisq = score;
+                    best_scale = scale_factors;
                 }
             }
         }
         
         if(!QUIET)
-            printf("done\nBest chisquare is %f with radius adjustment factor = %f and hydration density = %f\n", best_chisq,
+            printf("done\n\nBest fit:\ndummy atom radius adjustment = %f\nhydration density factor = %f\n"
+                   "scaling factor = %e\nprofile offset = %f\nchisquare = %f\n\n",
                    RADIUS_MIN + (RADIUS_MAX - RADIUS_MIN) * best_d / RADIUS_SAMPLES,
-                   HYDRATION_MIN + (HYDRATION_MAX - HYDRATION_MIN) * best_h / HYDRATION_SAMPLES);
-        
+                   HYDRATION_MIN + (HYDRATION_MAX - HYDRATION_MIN) * best_h / HYDRATION_SAMPLES,
+                   best_scale.constant, -best_scale.offset, best_chisq);
         calculated_profile.q = experimental_data.q;
         calculated_profile.i = profiles[best_d * HYDRATION_SAMPLES + best_h].i;
         calculated_profile.e = NULL;
@@ -253,9 +276,8 @@ int main(int argc, const char** argv)
     {
         if(!QUIET)
             fputs("Calculating scattering...", stdout);
-        intensities = malloc(sizeof(double) * Q_POINTS);
-        calculated_profile.q = q;
-        calculated_profile.i = intensities;
+        calculated_profile.q = experimental_q;
+        calculated_profile.i = experimental_i;
         calculated_profile.e = NULL;
         calculated_profile.length = (size_t)Q_POINTS;
         unfitted_saxs(&calculated_profile, atoms, per_atom_sasa, atoms_read, sampling_vectors, (size_t) GV_POINTS,
@@ -279,8 +301,6 @@ int main(int argc, const char** argv)
     free_neighborlist(&nl);
     free(per_atom_sasa);
     free(atoms);
-    free(q);
-    free(intensities);
     if(experimental_i)
         free(experimental_i);
     if(experimental_e)
