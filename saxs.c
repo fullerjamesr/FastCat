@@ -426,8 +426,9 @@ ProfileScaleResult find_chisq_scale_factor(const SaxsProfile *const restrict ref
     double model_exp_sum = 0.0;
     for(size_t i = 0; i < reference->length; i++)
     {
-        modelsquared_sum += to_move->i[i] * to_move->i[i] / reference->e[i] / reference->e[i];
-        model_exp_sum += to_move->i[i] * reference->i[i] / reference->e[i] / reference->e[i];
+        double inv_sigmasquared = 1.0 / reference->e[i] / reference->e[i];
+        modelsquared_sum += to_move->i[i] * to_move->i[i] * inv_sigmasquared;
+        model_exp_sum += to_move->i[i] * reference->i[i] * inv_sigmasquared;
     }
     
     ProfileScaleResult result = {.constant = model_exp_sum / modelsquared_sum, .offset = 0.0};
@@ -444,18 +445,20 @@ ProfileScaleResult find_chisq_scale_factor_with_offset(const SaxsProfile *const 
     double model_sum = 0.0;
     double model_exp_sum = 0.0;
     double exp_sum = 0.0;
-    
+    double sigma_sum = 0.0;
+  
     for(size_t i = 0; i < reference->length; i++)
     {
-        modelsquared_sum += to_move->i[i] * to_move->i[i] / reference->e[i] / reference->e[i];
-        model_sum += to_move->i[i] / reference->e[i] / reference->e[i];
-        model_exp_sum += to_move->i[i] * reference->i[i] / reference->e[i] / reference->e[i];
-        exp_sum += reference->i[i] / reference->e[i] / reference->e[i];
+        double inv_sigmasquared = 1.0 / reference->e[i] / reference->e[i];
+        sigma_sum += inv_sigmasquared;
+        modelsquared_sum += to_move->i[i] * to_move->i[i] * inv_sigmasquared;
+        model_sum += to_move->i[i] * inv_sigmasquared;
+        model_exp_sum += to_move->i[i] * reference->i[i] * inv_sigmasquared;
+        exp_sum += reference->i[i] * inv_sigmasquared;
     }
     
-    //TODO: I MESSED UP, THIS IS WRONG
-    ProfileScaleResult result = { .constant = (exp_sum * model_sum - model_exp_sum * reference->length) / (model_sum * model_sum - modelsquared_sum * reference->length),
-                                  .offset = (exp_sum * modelsquared_sum - model_exp_sum * model_sum) / (model_sum * model_sum - modelsquared_sum * reference->length)};
+    ProfileScaleResult result = { .constant = (model_sum * exp_sum - model_exp_sum * sigma_sum) / (model_sum * model_sum - modelsquared_sum * sigma_sum),
+                                  .offset = (modelsquared_sum * exp_sum - model_exp_sum * model_sum) / (model_sum * model_sum - modelsquared_sum * sigma_sum)};
     return result;
 }
 
