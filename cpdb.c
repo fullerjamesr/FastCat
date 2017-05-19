@@ -184,7 +184,6 @@ bool parse_pdb_line_into_atom(const char* line, Atom * atom)
     atom = initialize_atom(atom);
     
     // COLS 7-11 are the integer serial number
-    //TODO: convert to strtol; apparently it's OK to have negative values for this?
     atom->serial = (uint32_t) atoi(line + 6);
     // COLS 13-16 are the atom name
     strncpy(atom->name, line + 12, 4);
@@ -209,7 +208,7 @@ bool parse_pdb_line_into_atom(const char* line, Atom * atom)
     strncpy(z,line+46,8);
     x[8]='\0';y[8]='\0';z[8]='\0';
     char *xoff,*yoff,*zoff;
-    atom->position.x= strtod(x, &xoff);
+    atom->position.x = strtod(x, &xoff);
     if(xoff == x)
         return false;
     atom->position.y= strtod(y, &yoff);
@@ -259,7 +258,9 @@ bool parse_pdb_line_into_atom(const char* line, Atom * atom)
         {
             // " if the AtomTypeString is in there and properly justified"
             // ... without the 2-len part below, cannot distinguish e.g. "C" from "CA"
-            if(strstr(atom->elementstr, AtomicSymbolStrings[j]) == atom->elementstr + (2 - strlen(AtomicSymbolStrings[j])))
+            // convert to uppercase because disagreements appear to exist about whether it's OK to have lowercase here
+            char element_toupper[3] = { (char)toupper(atom->elementstr[0]), (char)toupper(atom->elementstr[1]), '\0' };
+            if(strstr(element_toupper, AtomicSymbolStrings[j]) == element_toupper + (2 - strlen(AtomicSymbolStrings[j])))
             {
                 atom->element = (AtomType) j;
                 break;
@@ -339,14 +340,17 @@ bool parse_pdb_line_into_atom(const char* line, Atom * atom)
 */
 size_t read_atoms_from_pdbfile(Atom** buffer, size_t buffer_size, FILE* source, bool incl_hydrogens)
 {
+    assert(buffer);
+    assert(source);
     Atom* atoms = *buffer;
+    assert(atoms);
     
-    size_t line_buffer_size = sizeof(char) * 255;
-    char* line = malloc(line_buffer_size);
+    // The PDB specification says that any line in a PDB file is a maximum of 80 chars long, so this should be plenty
+    char line[128] = { '\0' };
     size_t atoms_read = 0;
-    while(readline(&line, &line_buffer_size, source, false) > 0)
+    while(!ferror(source) && !feof(source))
     {
-        if(strstr(line,"ATOM") == line || strstr(line,"HETATM") == line)
+        if(fgets(line, 128, source) && (strstr(line,"ATOM") == line || strstr(line,"HETATM") == line))
         {
             Atom* current_atom = atoms + atoms_read;
             if(parse_pdb_line_into_atom(line,current_atom) && (incl_hydrogens || current_atom->element != Hydrogen))
@@ -358,17 +362,19 @@ size_t read_atoms_from_pdbfile(Atom** buffer, size_t buffer_size, FILE* source, 
                     Atom* newatoms = realloc(atoms,sizeof(Atom) * newsize);
                     if(newatoms == NULL)
                     {
-                        // TODO: error message
+                        // TODO: error message?
                         break;
                     }
                     atoms = newatoms;
                     buffer_size = newsize;
                 }
             }
+            // `parse_pdb_line_into_atom` will write as much info as it can get, so on rejection `current_atom` is wiped
+            else
+                initialize_atom(current_atom);
         }
     }
     
-    free(line);
     *buffer = atoms;
     return atoms_read;
 }
