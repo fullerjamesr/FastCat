@@ -1,5 +1,5 @@
 # FastCat
-A tool for high-performance calculation of theoretical small-angle x-ray scattering (SAXS) profiles from input PDB files, and fitting that theoretical profile to experimental data.
+A tool for fast and accurate (all-atom) calculation of theoretical small-angle x-ray scattering (SAXS) profiles from input PDB files, and fitting that theoretical profile against experimental data.
 
 ## Building and usage
 fastcat is written in C11 with no external dependencies outside the C standard library, and so should be straightforward to build. A very basic CMakeLists.txt is provided, but is probably overkill. I develop and test the code against GCC 6.3.0 and ICC 2017 using -std=c11, but I've occasionally used it with GCC 4.9 (which only supports -std=c99) without incident. However, I cannot promise C99 support going forward.
