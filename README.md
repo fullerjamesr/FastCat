@@ -6,11 +6,11 @@ fastcat is written in C11 with no external dependencies outside the C standard l
 
 fastcat supports multi-threading via OpenMP, so I recommend enabling that during building if possible.
 
-Usage follows the traditional pattern of 
-
+Usage follows the normal pattern of 
+```
 $ fastcat [options] structure.pdb [experimental_data.dat]
-
-see fastcat --help for command line argument information.
+```
+see `fastcat --help` for command line argument information.
 
 ## Motivation
 This project was concieved as a way to
@@ -22,5 +22,5 @@ I was/am comfortable enough with the the technique and underlying math so that I
 ## Method citations
 * In order to avoid the the poor performance scaling of the Debeye equation as the number of atoms increases, and the accuracy problems of spherical harmonics when applied to anisotropic molecules, I use the algorithm described in Watson and Curtis, "Rapid and accurate calculation of small-angle scattering profiles using the golden ratio" J Appl Cryst (2013). https://doi.org/10.1107/S002188981301666X
 * To calculate atomic form factors for each element and maximize their accuracy even at high scattering angles, I use the equations presented in Muhammad and Lee, "New Empirical Equation for the Atomic Form Factor Function in the Momentum Transfer Range, q = 0–50 Å−1 for the Elements in the Range 1≤ Z ≤30" Plos One (2013). https://doi.org/10.1371/journal.pone.0069608
-* In order to estimate and correct for excluded volume, particularly in the case of implicit hydrogens, I use the combined atom radii determined by [CITATIONS NEEDED]
-* For modeling the hydration layer, I take the implicit hydration shell approach described by the FoXS program authors [CITATION NEEDED].
+* In order to estimate and correct for excluded volume, particularly in the case of implicit hydrogens, I use the combined atom radii determined by Tsai et al. "The packing density in proteins: standard radii and volumes" J Mol Bio (1999). https://doi.org/10.1006/jmbi.1999.2829
+* For modeling the hydration layer, I take the implicit hydration shell approach described by the FoXS program authors: Schneidman-Duhovny et al., "Accurate SAXS Profile Computation and its Assessment by Contrast Variation Experiments" Biophys J (2013). https://dx.doi.org/10.1016/j.bpj.2013.07.020
