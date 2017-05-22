@@ -2,15 +2,27 @@
 A tool for fast and accurate (all-atom) calculation of theoretical small-angle x-ray scattering (SAXS) profiles from input PDB files, and fitting that theoretical profile against experimental data.
 
 ## Building and usage
-fastcat is written in C11 with no external dependencies outside the C standard library, and so should be straightforward to build. A very basic CMakeLists.txt is provided, but is probably overkill. I develop and test the code against GCC 6.3.0 and ICC 2017 using -std=c11, but I've occasionally used it with GCC 4.9 (which only supports -std=c99) without incident. However, I cannot promise C99 support going forward.
+fastcat is written in C11 with no external dependencies outside the C standard library, and so should be straightforward to build. A very basic CMakeLists.txt is provided, but is probably overkill. I develop and test the code against GCC 6.3 and ICC 17.0 using -std=c11, but I've occasionally used it with GCC 4.4.7 (which only supports -std=c99) without incident. However, I cannot promise C99 support going forward.
 
-fastcat supports multi-threading via OpenMP, so I recommend enabling that during building if possible.
+fastcat supports multi-threading via OpenMP, so I recommend enabling that during building if possible (GCC: `-fopenmp` or ICC: `-qopenmp`).
 
-Usage follows the normal pattern of 
+When bypassing CMake (which is most of the time), I build using the command:
+```
+$ gcc -o fastcat -std=c11 -march=native -O3 -fopenmp -flto -ffast-math -DNDEBUG -lm *.c
+```
+or
+```
+$ icc -o fastcat -std=c11 -xHost -O3 -qopenmp -ipo -DNDEBUG *.c
+```
+
+
+Usage follows the normal pattern of: 
 ```
 $ fastcat [options] structure.pdb [experimental_data.dat]
 ```
-see `fastcat --help` for command line argument information.
+where structure.pdb is a path to a valid PDB file, and experimental.dat is the path to a file with experimental data to fit against, in a whitespace-delimited 3 column (q, intensity, error) format.
+
+See `fastcat --help` for command line argument information.
 
 ## Motivation
 This project was concieved as a way to
