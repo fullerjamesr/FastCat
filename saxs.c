@@ -258,6 +258,7 @@ void fitted_saxs(double* const restrict intensities, const double* const restric
     assert(formFactorTable != NULL);
     assert(num_hydration_samples > 0);
     assert(num_atoms > 0);
+    assert(formFactorTable->dummy_options_count <= 64);
     
     const size_t dummy_options_count = formFactorTable->dummy_options_count;
     const double delta_hydration = (max_hydration - min_hydration) /num_hydration_samples;
@@ -273,17 +274,25 @@ void fitted_saxs(double* const restrict intensities, const double* const restric
 
     #pragma omp parallel
     {
-        double *restrict intensity = calloc(dummy_options_count * num_hydration_samples, sizeof(double));
-        double *restrict dummy_cos_bucket = calloc(dummy_options_count, sizeof(double));
-        double *restrict dummy_sin_bucket = calloc(dummy_options_count, sizeof(double));
-        // in debug mode, check to make sure that the current platform represents the double value of 0.0 as zeroed memory
+        // Execution times get ~5% faster if the dummy atom arrays are on the stack. However, the size of
+        // `intensity` makes me hesitant to also put it on the stack.
+        double* restrict intensity = calloc(dummy_options_count * num_hydration_samples, sizeof(double));
+        //double* restrict dummy_cos_bucket = calloc(dummy_options_count, sizeof(double));
+        //double* restrict dummy_sin_bucket = calloc(dummy_options_count, sizeof(double));
+        double dummy_cos_bucket[64];
+        double dummy_sin_bucket[64];
+        const size_t bucket_length = sizeof(double) * dummy_options_count;
+        memset(dummy_cos_bucket, 0, bucket_length);
+        memset(dummy_sin_bucket, 0, bucket_length);
+        // In debug mode, check to make sure that the current platform represents the double value of 0.0 as zeroed memory
         assert(intensity[0] == 0.0);
+        assert(dummy_cos_bucket[0] == 0.0);
 
         #pragma omp for
         for(size_t q = 0; q < profile_length; q++)
         {
             size_t ff_table_row = q * MAX_OFFSET;
-            double *restrict vacuo_form_factors = formFactorTable->vacuo_form_factors + ff_table_row;
+            double* restrict vacuo_form_factors = formFactorTable->vacuo_form_factors + ff_table_row;
             for(size_t v = 0; v < num_vectors; v++)
             {
                 coord q_vector = vec_multiply(sampling_vectors[v], q_values[q]);
@@ -307,7 +316,7 @@ void fitted_saxs(double* const restrict intensities, const double* const restric
                     hydration_cos_bucket += hydration_ff * cos_scat;
                     hydration_sin_bucket += hydration_ff * sin_scat;
                     
-                    double *restrict dummy_ffs =
+                    double* restrict dummy_ffs =
                             formFactorTable->dummy_form_factors + ff_table_row * dummy_options_count +
                             offsets[a] * dummy_options_count;
                     for(size_t d = 0; d < dummy_options_count; d++)
@@ -330,10 +339,8 @@ void fitted_saxs(double* const restrict intensities, const double* const restric
                     }
                 }
                 
-                memset(dummy_cos_bucket, 0, sizeof(double) * dummy_options_count);
-                memset(dummy_sin_bucket, 0, sizeof(double) * dummy_options_count);
-                // same check as above: make sure that zeroed memory represents the double value of 0.0
-                assert(dummy_cos_bucket[0] == 0.0);
+                memset(dummy_cos_bucket, 0, bucket_length);
+                memset(dummy_sin_bucket, 0, bucket_length);
             }
             
             // Spool the results of the calculation back into `intensities`, the caller-supplied destination array
@@ -348,15 +355,12 @@ void fitted_saxs(double* const restrict intensities, const double* const restric
                     intensities[outer_dim_offset + h * profile_length] = intensity[inner_dim_offset + h] / num_vectors;
                 }
             }
-            
             memset(intensity, 0, sizeof(double) * dummy_options_count * num_hydration_samples);
-            // same check as above: make sure that zeroed memory represents the double value of 0.0
-            assert(intensity[0] == 0.0);
         }
         
         free(intensity);
-        free(dummy_cos_bucket);
-        free(dummy_sin_bucket);
+        //free(dummy_cos_bucket);
+        //free(dummy_sin_bucket);
     }
     
     free(offsets);
