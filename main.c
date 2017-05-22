@@ -54,10 +54,10 @@ int main(int argc, const char** argv)
     double DELTA_Q = 0.001;
     int GV_POINTS = 149;
     double SOLVENT_DENSITY = 0.334;
-    int RADIUS_SAMPLES = 10;
+    int RADIUS_SAMPLES = 20;
     double RADIUS_MIN = 0.95;
     double RADIUS_MAX = 1.05;
-    int HYDRATION_SAMPLES = 15;
+    int HYDRATION_SAMPLES = 60;
     double HYDRATION_MIN = -2.0;
     double HYDRATION_MAX = 4.0;
     int SASA_POINTS = 99;
@@ -96,6 +96,9 @@ int main(int argc, const char** argv)
     omp_set_num_threads(NUM_THREADS);
 #endif
     
+    // Make sure radius samples is <= 64
+    if(RADIUS_SAMPLES > 64)
+        RADIUS_SAMPLES = 64;
     
     /*
      *
@@ -182,7 +185,7 @@ int main(int argc, const char** argv)
         fflush(stdout);
     }
     NeighborList nl;
-    allocate_make_neighbor_list(&nl, atoms, atoms_read, 3.0 + 3.0 + 1.4 * 2);
+    allocate_make_neighbor_list(&nl, atoms, atoms_read, 9.0);
     if(!QUIET)
     {
         printf("done\n");
@@ -213,11 +216,13 @@ int main(int argc, const char** argv)
         puts("done");
     
     SaxsProfile calculated_profile;
-;
     if(dat_file_handle)
     {
         if(!QUIET)
+        {
             fputs("Enumerating scattering profiles...", stdout);
+            fflush(stdout);
+        }
         double* intensities = malloc(sizeof(double) * experimental_data.length * RADIUS_SAMPLES * HYDRATION_SAMPLES);
         double* intensities_marker = intensities;
         SaxsProfile* profiles = malloc(sizeof(SaxsProfile) * RADIUS_SAMPLES * HYDRATION_SAMPLES);
@@ -275,7 +280,10 @@ int main(int argc, const char** argv)
     else
     {
         if(!QUIET)
+        {
             fputs("Calculating scattering...", stdout);
+            fflush(stdout);
+        }
         calculated_profile.q = experimental_q;
         calculated_profile.i = experimental_i;
         calculated_profile.e = NULL;
@@ -301,8 +309,7 @@ int main(int argc, const char** argv)
     free_neighborlist(&nl);
     free(per_atom_sasa);
     free(atoms);
-    if(experimental_i)
-        free(experimental_i);
+    free(experimental_i);
     if(experimental_e)
         free(experimental_e);
     free(formFactorTable.vacuo_form_factors);
