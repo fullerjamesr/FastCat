@@ -279,14 +279,11 @@ void fitted_saxs(double* const restrict intensities, const double* const restric
         double* restrict intensity = calloc(dummy_options_count * num_hydration_samples, sizeof(double));
         //double* restrict dummy_cos_bucket = calloc(dummy_options_count, sizeof(double));
         //double* restrict dummy_sin_bucket = calloc(dummy_options_count, sizeof(double));
-        double dummy_cos_bucket[64];
-        double dummy_sin_bucket[64];
+        double dummy_cos_bucket[64] = { 0.0 };
+        double dummy_sin_bucket[64] = { 0.0 };
         const size_t bucket_length = sizeof(double) * dummy_options_count;
-        memset(dummy_cos_bucket, 0, bucket_length);
-        memset(dummy_sin_bucket, 0, bucket_length);
         // In debug mode, check to make sure that the current platform represents the double value of 0.0 as zeroed memory
         assert(intensity[0] == 0.0);
-        assert(dummy_cos_bucket[0] == 0.0);
 
         #pragma omp for
         for(size_t q = 0; q < profile_length; q++)

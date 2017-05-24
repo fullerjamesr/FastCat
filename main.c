@@ -76,7 +76,7 @@ int main(int argc, const char** argv)
         OPT_DOUBLE('d', "delta_q", &DELTA_Q, "spacing between points in the calculated scattering profile"),
         OPT_INTEGER('n', "sampling_vectors", &GV_POINTS, "number of scattering vectors to sample during profile calculation"),
         OPT_DOUBLE('s', "solvent_density", &SOLVENT_DENSITY, "solvent density to use when calculating the scattering contribution from excluded volume"),
-        OPT_INTEGER(0, "hydration_layer_samples", &HYDRATION_SAMPLES, "number of hydration layer density samples to enumerate between `hydration_layer_min` and `hydration_layer_max"),
+        OPT_INTEGER(0, "hydration_layer_samples", &HYDRATION_SAMPLES, "number of hydration layer density samples to enumerate between `hydration_layer_min` and `hydration_layer_max`"),
         OPT_DOUBLE(0, "hydration_layer_min", &HYDRATION_MIN, "minimum number of hydration blobs neighboring a fully exposed atom"),
         OPT_DOUBLE(0, "hydration_layer_max", &HYDRATION_MAX, "maximum number of hydration blobs neighboring a fully exposed atom"),
         OPT_INTEGER(0, "excluded_radius_samples", &RADIUS_SAMPLES, "number of adjustments to dummy atom radii to enumerate between `radius_min` and `radius_max`"),
@@ -142,11 +142,33 @@ int main(int argc, const char** argv)
     size_t real_profile_size = (size_t)Q_POINTS;
     if(dat_file_handle)
     {
-        experimental_q = malloc(sizeof(double) * 1024);
-        experimental_i = malloc(sizeof(double) * 1024);
-        experimental_e = malloc(sizeof(double) * 1024);
+        size_t profile_alloc_size = 1024;
+        experimental_q = malloc(sizeof(double) * profile_alloc_size);
+        experimental_i = malloc(sizeof(double) * profile_alloc_size);
+        experimental_e = malloc(sizeof(double) * profile_alloc_size);
+        
         double* data[3] = { experimental_q, experimental_i, experimental_e};
         real_profile_size = read_3_column_data(data, 1024, dat_file_handle);
+        
+        // read until there are no more lines coming in
+        while(real_profile_size == profile_alloc_size)
+        {
+            profile_alloc_size *= 2;
+            double* re_q = realloc(experimental_q, sizeof(double) * profile_alloc_size);
+            double* re_i = realloc(experimental_i, sizeof(double) * profile_alloc_size);
+            double* re_e = realloc(experimental_e, sizeof(double) * profile_alloc_size);
+            if(!re_q || !re_i || !re_e)
+                break;
+            
+            experimental_q = re_q;
+            experimental_i = re_i;
+            experimental_e = re_e;
+            data[0] = experimental_q + real_profile_size;
+            data[1] = experimental_i + real_profile_size;
+            data[2] = experimental_e + real_profile_size;
+            real_profile_size += read_3_column_data(data, profile_alloc_size - real_profile_size, dat_file_handle);
+        }
+        
         fclose(dat_file_handle);
         
         if(!QUIET)
@@ -167,9 +189,9 @@ int main(int argc, const char** argv)
     // Printing the status of all options can finally be done here because we know if the Q_GRID is specified by experimental data
     print_state(&argParseInfo);
     
-    size_t buffsize = 500;
-    Atom* atoms = malloc(sizeof(Atom) * buffsize);
-    size_t atoms_read = read_atoms_from_pdbfile(&atoms, buffsize, pdb_file_handle, false);
+    size_t atoms_buffersize = 10000;
+    Atom* atoms = malloc(sizeof(Atom) * atoms_buffersize);
+    size_t atoms_read = read_atoms_from_pdbfile(&atoms, atoms_buffersize, pdb_file_handle, false);
     fclose(pdb_file_handle);
     if(!QUIET)
     {

@@ -31,10 +31,7 @@ ProfileScaleResult find_chisq_scale_factor(const SaxsProfile *const restrict ref
                                            const SaxsProfile *const restrict to_move);
 ProfileScaleResult find_chisq_scale_factor_with_offset(const SaxsProfile *const restrict reference,
                                                        const SaxsProfile *const restrict to_move);
-
 double chi_square(const SaxsProfile* const restrict experimental, const SaxsProfile* const restrict model);
-
-double chi_square_fit(const SaxsProfile* const restrict experimental, const SaxsProfile* const restrict model);
 
 double fast_form_factor(unsigned int z, double q);
 double form_factor(unsigned int z, double q);
