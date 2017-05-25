@@ -11,24 +11,19 @@
 #include "argparse.h"
 #include "fileio.h"
 
-void write_saxs(FILE* dest, const double* q, const double* i, const double* e, const size_t len)
+#ifndef EXPERIMENTAL_DATA_ALLOC_SIZE
+    #define EXPERIMENTAL_DATA_ALLOC_SIZE 1024
+#endif
+#ifndef ATOMS_ALLOC_SIZE
+    #define ATOMS_ALLOC_SIZE 10000
+#endif
+
+void write_saxs(FILE* destination, const SaxsProfile* const source)
 {
-    if(e != NULL)
-    {
-        for(size_t x = 0; x < len; x++)
-        {
-            fprintf(dest, "%.5f\t%f\t%f\n", q[x], i[x], e[x]);
-        }
-    
-    }
+    if(source->e)
+        write_n_column_data(destination, source->length, 3, source->q, source->i, source->e);
     else
-    {
-        for(size_t x = 0; x < len; x++)
-        {
-            fprintf(dest, "%.5f\t%f\n", q[x], i[x]);
-        }
-    }
-    fputc('\n', dest);
+        write_n_column_data(destination, source->length, 2, source->q, source->i);
 }
 
 
@@ -126,15 +121,10 @@ int main(int argc, const char** argv)
     FILE* pdb_file_handle = fopen(pdb_filename, "r");
     if(!pdb_file_handle)
     {
-        fprintf(stderr, "error: could not open PDB file %s\n", pdb_filename);
+        perror("Could not open PDB file:");
         exit(1);
     }
     FILE* dat_file_handle = fopen(dat_filename, "r");
-    if(!pdb_file_handle)
-    {
-        fprintf(stderr, "error: could not open experimental data file %s\n", pdb_filename);
-        exit(1);
-    }
     
     double* experimental_q = NULL;
     double* experimental_i = NULL;
@@ -142,13 +132,13 @@ int main(int argc, const char** argv)
     size_t real_profile_size = (size_t)Q_POINTS;
     if(dat_file_handle)
     {
-        size_t profile_alloc_size = 1024;
+        size_t profile_alloc_size = EXPERIMENTAL_DATA_ALLOC_SIZE;
         experimental_q = malloc(sizeof(double) * profile_alloc_size);
         experimental_i = malloc(sizeof(double) * profile_alloc_size);
         experimental_e = malloc(sizeof(double) * profile_alloc_size);
         
         double* data[3] = { experimental_q, experimental_i, experimental_e};
-        real_profile_size = read_3_column_data(data, 1024, dat_file_handle);
+        real_profile_size = read_3_column_data(data, profile_alloc_size, dat_file_handle);
         
         // read until there are no more lines coming in
         while(real_profile_size == profile_alloc_size)
@@ -189,7 +179,7 @@ int main(int argc, const char** argv)
     // Printing the status of all options can finally be done here because we know if the Q_GRID is specified by experimental data
     print_state(&argParseInfo);
     
-    size_t atoms_buffersize = 10000;
+    size_t atoms_buffersize = ATOMS_ALLOC_SIZE;
     Atom* atoms = malloc(sizeof(Atom) * atoms_buffersize);
     size_t atoms_read = read_atoms_from_pdbfile(&atoms, atoms_buffersize, pdb_file_handle, false);
     fclose(pdb_file_handle);
@@ -319,13 +309,15 @@ int main(int argc, const char** argv)
     char outfilename[256];
     sprintf(outfilename, "%s%s", pdb_filename, "-fastcat.dat");
     FILE* outfile = fopen(outfilename, "w");
-    if(outfile != NULL)
+    if(outfile)
     {
         printf("Writing result to %s...", outfilename);
-        write_saxs(outfile, calculated_profile.q, calculated_profile.i, calculated_profile.e, calculated_profile.length);
+        write_saxs(outfile, &calculated_profile);
         fclose(outfile);
         puts("done");
     }
+    else
+        perror("Could not write resulting profile:");
     
     
     free_neighborlist(&nl);

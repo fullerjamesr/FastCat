@@ -1,5 +1,6 @@
-#include <assert.h>
 #include <stdlib.h>
+#include <stdarg.h>
+#include <assert.h>
 #include "fileio.h"
 
 /*
@@ -157,4 +158,25 @@ size_t read_3_column_data(double** buffer, size_t nrows, FILE* source)
         while(!ferror(source) && !feof(source) && fgetc(source) != '\n');
     }
     return rows;
+}
+
+void write_n_column_data(FILE* destination, const size_t nrows, const size_t ncols,  ...)
+{
+    assert(destination);
+    
+    va_list vargs;
+    for(size_t r = 0; r < nrows && !ferror(destination); r++)
+    {
+        va_start(vargs, ncols);
+        for(size_t c = 0; c < ncols && !ferror(destination); c++)
+        {
+            double* col = va_arg(vargs, double*);
+            char followup = (char) (c == ncols - 1 ? '\n' : '\t');
+            if(col)
+                fprintf(destination, "%lf%c", col[r], followup);
+            else
+                fputc(followup, destination);
+        }
+        va_end(vargs);
+    }
 }
