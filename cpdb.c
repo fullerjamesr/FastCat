@@ -530,7 +530,7 @@ OrganicAtomConfig determine_bonding_config(const Atom* atom)
     
     // Peptide backbone
     if(strcmp(atom->name," CA ") == 0)
-        return C4H1;
+        return atom->res_type == GLY ? C4H2 : C4H1;
     else if(strcmp(atom->name," C  ") == 0)
         return C3H0;
     else if(strcmp(atom->name," O  ") == 0)
