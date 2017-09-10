@@ -5,7 +5,7 @@
 #include "argparse.h"
 
 
-void print_usage(ArgParseInfo* argParseInfo)
+void print_usage(const ArgParseInfo* argParseInfo)
 {
     // Print header
     printf("\nUsage: %s\n\n", argParseInfo->usage ? argParseInfo->usage : "");
@@ -62,7 +62,7 @@ void print_usage(ArgParseInfo* argParseInfo)
         printf("%s\n", argParseInfo->epilog);
 }
 
-void print_state(ArgParseInfo* argParseInfo)
+void print_state(const ArgParseInfo* argParseInfo)
 {
     // Determine the width of the longest option
     size_t long_option_len = 0;
@@ -93,42 +93,41 @@ void print_state(ArgParseInfo* argParseInfo)
             printf("-%-*c    ", (int)long_option_len, option->short_name);
         }
         
-        char* value;
-        char buffer[128];
         switch(option->type)
         {
             case ARGPARSE_OPT_BOOLEAN:
             {
-                value = *((bool*)option->value) ? "TRUE" : "FALSE";
+                puts(*((bool*)option->value) ? "TRUE" : "FALSE");
                 break;
             }
             case ARGPARSE_OPT_STRING:
             {
-                value = *((char**)option->value);
+                puts(*((char**)option->value));
                 break;
             }
             case ARGPARSE_OPT_INTEGER:
             {
-                snprintf(buffer, sizeof(buffer), "%d", *((int*)option->value));
-                value = buffer;
+                printf("%d\n", *((int*)option->value));
+                break;
+            }
+            case ARGPARSE_OPT_SIZE:
+            {
+                printf("%zu\n", *((size_t*)option->value));
                 break;
             }
             case ARGPARSE_OPT_DOUBLE:
             {
-                snprintf(buffer, sizeof(buffer), "%0.8f", *((double*)option->value));
-                value = buffer;
+                printf("%0.8f\n", *((double*)option->value));
                 break;
             }
             default:
             {
-                value = "";
+                putchar('\n');
             }
         }
-        
-        printf("%s\n", value);
     }
 }
-int do_argparse(ArgParseInfo* argParseInfo, int argc, const char** argv)
+int do_argparse(const ArgParseInfo* argParseInfo, int argc, const char** argv)
 {
     int inputs_count = 0;
     
@@ -164,24 +163,34 @@ int do_argparse(ArgParseInfo* argParseInfo, int argc, const char** argv)
                             }
                             case ARGPARSE_OPT_BOOLEAN:
                             {
-                                *((bool *)option->value) = true;
+                                *( (bool*)option->value ) = *( (bool*)option->value ) ? false : true;
                                 break;
                             }
                             case ARGPARSE_OPT_STRING:
                             {
                                 if(i + 1 >= argc)
                                     goto requiresvalue;
-                                *((const char **)option->value) = argv[++i];
+                                *( (const char**)option->value ) = argv[++i];
                                 break;
                             }
                             case ARGPARSE_OPT_INTEGER:
                             {
                                 if(i + 1 >= argc)
                                     goto requiresvalue;
-                                long int intvalue = strtol(argv[++i], &endptr, 0);
-                                if(*endptr)
+                                long int long_value = strtol(argv[++i], &endptr, 0);
+                                if(*endptr || long_value > (long int)INT_MAX)
                                     goto parseerror;
-                                *((int *)option->value) = (int) intvalue;
+                                *( (int*)option->value ) = (int)long_value;
+                                break;
+                            }
+                            case ARGPARSE_OPT_SIZE:
+                            {
+                                if(i + 1 >= argc)
+                                    goto requiresvalue;
+                                unsigned long long int ull_value = strtoull(argv[++i], &endptr, 0);
+                                if(*endptr || ull_value > (unsigned long long int)SIZE_MAX)
+                                    goto parseerror;
+                                *( (size_t*)option->value ) = (size_t)ull_value;
                                 break;
                             }
                             case ARGPARSE_OPT_DOUBLE:
@@ -191,7 +200,7 @@ int do_argparse(ArgParseInfo* argParseInfo, int argc, const char** argv)
                                 double dblvalue = strtod(argv[++i], &endptr);
                                 if(*endptr)
                                     goto parseerror;
-                                *((double *)option->value) = dblvalue;
+                                *( (double*)option->value ) = dblvalue;
                                 break;
                             }
                             default:
@@ -250,20 +259,28 @@ int do_argparse(ArgParseInfo* argParseInfo, int argc, const char** argv)
             {
                 case ARGPARSE_OPT_BOOLEAN:
                 {
-                    *((bool *) best_match->value) = true;
+                    *( (bool*)best_match->value ) = *( (bool*)best_match->value ) ? false : true;
                     break;
                 }
                 case ARGPARSE_OPT_STRING:
                 {
-                    *((const char **) best_match->value) = value;
+                    *( (const char**) best_match->value) = value;
                     break;
                 }
                 case ARGPARSE_OPT_INTEGER:
                 {
-                    long int intvalue = strtol(value, &endptr, 0);
-                    if(*endptr)
+                    long int long_value = strtol(value, &endptr, 0);
+                    if(*endptr || long_value > (long int)INT_MAX)
                         goto parseerror;
-                    *((int *) best_match->value) = (int) intvalue;
+                    *( (int*) best_match->value ) = (int)long_value;
+                    break;
+                }
+                case ARGPARSE_OPT_SIZE:
+                {
+                    unsigned long long int ull_value = strtoull(value, &endptr, 0);
+                    if(*endptr || ull_value > (unsigned long long int)SIZE_MAX)
+                        goto parseerror;
+                    *( (size_t*)best_match->value ) = (size_t)ull_value;
                     break;
                 }
                 case ARGPARSE_OPT_DOUBLE:
@@ -271,7 +288,7 @@ int do_argparse(ArgParseInfo* argParseInfo, int argc, const char** argv)
                     double dblvalue = strtod(value, &endptr);
                     if(*endptr)
                         goto parseerror;
-                    *((double *) best_match->value) = dblvalue;
+                    *( (double*) best_match->value ) = dblvalue;
                     break;
                 }
                 default:

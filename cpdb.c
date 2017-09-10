@@ -270,8 +270,8 @@ bool parse_pdb_line_into_atom(const char* line, Atom * atom)
     // ... but if needed it can be inferred from name
     else
     {
-        // justification here is a nightmare of rules:
-        // (1) if the first character is blank, then the element has a single letter symbol and is found at the second position
+        // justification here is a nightmare of rules; for a given 4 character atom name:
+        // (1) if the first character is blank, then the element has a single letter symbol which is found at the second position
         // (2) if the last two characters are blank, then the element has a two letter symbol given by the first two positions
         // (3) finally, if neither of the above are true, the elements has a single letter symbol which is found at the first position
         int leading_space = isspace(atom->name[0]) ? 1 : 0;
@@ -280,10 +280,8 @@ bool parse_pdb_line_into_atom(const char* line, Atom * atom)
             int i;
             for(i = 0; i < (AtomTypeCount - 1); i++)
             {
-                // break on non-single-letter
-                if(strlen(AtomicSymbolStrings[i]) > 1)
-                    continue;
-                if(atom->name[leading_space] == AtomicSymbolStrings[i][0])
+                // remember to avoid non-single-letter symbols
+                if(AtomicSymbolStrings[i][1] == '\0' && atom->name[leading_space] == AtomicSymbolStrings[i][0])
                 {
                     atom->element = (AtomType) i;
                     break;
@@ -528,25 +526,32 @@ OrganicAtomConfig determine_bonding_config(const Atom* atom)
     if(atom->res_type == UnknownRes)
         return UnknownBonds;
     
-    // Peptide backbone
-    if(strcmp(atom->name," CA ") == 0)
-        return atom->res_type == GLY ? C4H2 : C4H1;
-    else if(strcmp(atom->name," C  ") == 0)
-        return C3H0;
-    else if(strcmp(atom->name," O  ") == 0)
-        return O1H0;
-    else if(strcmp(atom->name," OXT") == 0)
-        return O1H0;
-    else if(strcmp(atom->name," OT1") == 0)
-        return O1H0;
-    else if(strcmp(atom->name," OT2") == 0)
-        return O1H0;
-    else if(strcmp(atom->name," N  ") == 0)
-        return N3H1;
-    //TODO: what is the most straightforward way to determine N-terminal-ness? Possibly related to the brute force above
+    // Peptide backbone -- these atom names are reserved by the PDB standard regardless of residue, I think
+    if(atom->res_type >= ALA && atom->res_type <= VAL)
+    {
+        if(strcmp(atom->name, " CA ") == 0)
+            return atom->res_type == GLY ? C4H2 : C4H1;
+        else if(strcmp(atom->name, " C  ") == 0)
+            return C3H0;
+        else if(strcmp(atom->name, " O  ") == 0)
+            return O1H0;
+        else if(strcmp(atom->name, " OXT") == 0)
+            return O1H0;
+        else if(strcmp(atom->name, " OT1") == 0)
+            return O1H0;
+        else if(strcmp(atom->name, " OT2") == 0)
+            return O1H0;
+        else if(strcmp(atom->name, " N  ") == 0)
+            return N3H1;
+        //TODO: what is the most straightforward way to determine N-terminal-ness? Possibly also brute force spacial search
+    }
     
     switch(atom->res_type)
     {
+        case HOH:
+            // TODO: This is not right, need to add heavy atom data for waters
+            return O1H0;
+            break;
         case ALA:
             if(strcmp(atom->name," CB ") == 0)
                 return C4H3;
@@ -593,6 +598,18 @@ OrganicAtomConfig determine_bonding_config(const Atom* atom)
             else if(strcmp(atom->name, " SG ") == 0)
                 return S2H1;
             break;
+        case GLN:
+            if(strcmp(atom->name, " CB ") == 0)
+                return C4H2;
+            else if(strcmp(atom->name, " CG ") == 0)
+                return C4H2;
+            else if(strcmp(atom->name, " CD ") == 0)
+                return C3H0;
+            else if(strcmp(atom->name, " OE1") == 0)
+                return O1H0;
+            else if(strcmp(atom->name, " NE2") == 0)
+                return N3H2;
+            break;
         case GLU:
             if(strcmp(atom->name, " CB ") == 0)
                 return C4H2;
@@ -605,17 +622,7 @@ OrganicAtomConfig determine_bonding_config(const Atom* atom)
             else if(strcmp(atom->name, " OE2") == 0)
                 return O1H0;
             break;
-        case GLN:
-            if(strcmp(atom->name, " CB ") == 0)
-                return C4H2;
-            else if(strcmp(atom->name, " CG ") == 0)
-                return C4H2;
-            else if(strcmp(atom->name, " CD ") == 0)
-                return C3H0;
-            else if(strcmp(atom->name, " OE1") == 0)
-                return O1H0;
-            else if(strcmp(atom->name, " NE2") == 0)
-                return N3H2;
+        case GLY:
             break;
         case HIS:
             if(strcmp(atom->name, " CB ") == 0)
@@ -888,7 +895,6 @@ OrganicAtomConfig determine_bonding_config(const Atom* atom)
             // End phosphate/sugar backbone
     }
     
-    // TODO: Error?
     return UnknownBonds;
 }
 
@@ -896,8 +902,14 @@ void assign_organic_atom_types(Atom* atoms, size_t num_atoms)
 {
     for(size_t a = 0; a < num_atoms; a++)
         if(atoms[a].element == Carbon || atoms[a].element == Nitrogen || atoms[a].element == Oxygen ||
-                atoms[a].element == Sulfur || atoms[a].element == Phosphorus)
-            atoms[a].organic_type = determine_bonding_config(atoms+a);
+           atoms[a].element == Sulfur || atoms[a].element == Phosphorus)
+        {
+            OrganicAtomConfig this_atom = determine_bonding_config(atoms + a);
+            atoms[a].organic_type = this_atom;
+            if(this_atom == UnknownBonds)
+                fprintf(stderr, "WARNING: Could not determine bonding configuration for heavy atom %d %s in %s\n",
+                        atoms[a].serial, atoms[a].name, atoms[a].res_name);
+        }
         else
             atoms[a].organic_type = UnknownBonds;
 }

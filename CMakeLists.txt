@@ -1,17 +1,23 @@
-cmake_minimum_required(VERSION 3.6)
+cmake_minimum_required(VERSION 2.8)
 project(FastCat)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS ON)
 
-# Optimizer flags -- supports Intel compiler or falls back to GNU flags
+if(MINGW)
+    add_definitions(-D__USE_MINGW_ANSI_STDIO=1)
+endif()
+
+# Optimizer  and warning flags -- supports Intel compiler or falls back to GNU flags
 if(CMAKE_C_COMPILER STREQUAL "Intel")
     set(CMAKE_C_FLAGS "${$CMAKE_C_FLAGS} -xHost")
     set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -ipo")
+    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -w3")
 else()
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native -ffast-math")
     set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -flto")
+    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -Wall -pedantic")
 endif()
 
 # Enable openmp support

@@ -1,4 +1,3 @@
-#define __USE_MINGW_ANSI_STDIO 1
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -24,6 +23,9 @@ void write_saxs(FILE* destination, const SaxsProfile* const source)
         write_n_column_data(destination, source->length, 3, source->q, source->i, source->e);
     else
         write_n_column_data(destination, source->length, 2, source->q, source->i);
+    
+    if(ferror(destination))
+        perror("Error writing result profile:");
 }
 
 
@@ -45,9 +47,9 @@ int main(int argc, const char** argv)
     bool QUIET = false;
     char* MODE = "fastcat";
     bool OFFSET = false;
-    int Q_POINTS = 501;
+    size_t Q_POINTS = 501;
     double DELTA_Q = 0.001;
-    int GV_POINTS = 149;
+    size_t GV_POINTS = 149;
     double SOLVENT_DENSITY = 0.334;
     int RADIUS_SAMPLES = 20;
     double RADIUS_MIN = 0.95;
@@ -67,9 +69,9 @@ int main(int argc, const char** argv)
         OPT_BOOLEAN(0, "quiet", &QUIET, "suppress standard output"),
         OPT_STRING('m', "mode", &MODE, "method to compute scattering (one of `fastcat` or `fastcat-search` or `debeye`"),
         OPT_BOOLEAN('o', "offset", &OFFSET, "when fitting profiles, fit a constant offset added to the experimental data to improve the fit"),
-        OPT_INTEGER('q', "profile_points", &Q_POINTS, "number of points in the calculated scattering profile"),
+        OPT_SIZE('q', "profile_points", &Q_POINTS, "number of points in the calculated scattering profile"),
         OPT_DOUBLE('d', "delta_q", &DELTA_Q, "spacing between points in the calculated scattering profile"),
-        OPT_INTEGER('n', "sampling_vectors", &GV_POINTS, "number of scattering vectors to sample during profile calculation"),
+        OPT_SIZE('n', "sampling_vectors", &GV_POINTS, "number of scattering vectors to sample during profile calculation"),
         OPT_DOUBLE('s', "solvent_density", &SOLVENT_DENSITY, "solvent density to use when calculating the scattering contribution from excluded volume"),
         OPT_INTEGER(0, "hydration_layer_samples", &HYDRATION_SAMPLES, "number of hydration layer density samples to enumerate between `hydration_layer_min` and `hydration_layer_max`"),
         OPT_DOUBLE(0, "hydration_layer_min", &HYDRATION_MIN, "minimum number of hydration blobs neighboring a fully exposed atom"),
@@ -192,6 +194,7 @@ int main(int argc, const char** argv)
     assign_organic_atom_types(atoms, atoms_read);
     if(!QUIET)
     {
+        fflush(stderr);
         printf("done\n");
         printf("Setting up neighbor lists...");
         fflush(stdout);
@@ -317,7 +320,7 @@ int main(int argc, const char** argv)
         puts("done");
     }
     else
-        perror("Could not write resulting profile:");
+        perror("Could not write result profile:");
     
     
     free_neighborlist(&nl);

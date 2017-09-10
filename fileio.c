@@ -4,35 +4,40 @@
 #include "fileio.h"
 
 /*
-* Read from a file until the first newline or EOF or error is reached.
-* Behavior is almost identical to fgets, except the number of characters written into the destination is returned.
-*
-* Parameters:
-*   char* buffer: An array of char of at least length `buffer_len`
-*   size_t buffer_len: The maximum number of chars to write to `buffer`
-*   FILE* source: A pointer to a valid FILE object that can be read from
-*   bool incl_newline: When a newline is encountered, should that be written into `buffer`?
-*
-* Returns:
-*   The number of characters that were written into `buffer`, excluding the terminating null character, which is always
-*   written unless `source` has EOF or ERROR set when the function called. Under normal circumstances this should be
-*   identical to the result of calling strlen(buffer) immediately after this function returns.
-*
-* Errors:
-*   If this returns 0 after being called with `buffer_len` > 1, three possibilities exist
-*   (0) there was a blank line
-*   (1) the EOF flag was set on source
-*   (2) the error flag was set on source
-*   In the case of #1 or #2, `buffer` remains unchanged.
-*
-*   Note that if EOF or ERROR results after one or more characters are successfully read, `buffer` will contain those
-*   successfully read characters (and a terminating null) and their count.
-*/
+ * Read characters from a file `source` into a C-string `buffer` until the first newline or EOF or error is reached.
+ * Behavior is almost identical to `fgets`, except the number of characters written into the destination is returned in
+ * order to make a subsequent call to `strlen(buffer)` unnecessary.
+ *
+ * Writes at most `buffer_len - 1` characters into `buffer`, then appends a terminating null after the last character
+ * written.
+ *
+ * Parameters:
+ *   char* buffer: An array of char of at least length `buffer_len`
+ *   size_t buffer_len: The maximum number of chars to write to `buffer`
+ *   FILE* source: A pointer to a valid FILE object that can be read from
+ *   bool incl_newline: When a newline is encountered, should that be written into `buffer`?
+ *
+ * Returns:
+ *   The number of characters that were written into `buffer`, excluding the terminating null character, which is always
+ *   written unless `source` has EOF or ERROR set when the function called. Under normal circumstances this should be
+ *   identical to the result of calling strlen(buffer) immediately after this function returns.
+ *
+ * Errors:
+ *   If this returns 0 after being called with `buffer_len` > 1, three possibilities exist
+ *   (0) there was a blank line
+ *   (1) the final character from `source` had already been read (and so the first read attempt returned EOF)
+ *   (2) the EOF or error flags was set on `source` already before this function was called
+ *   In the case of #2, `buffer` remains unchanged. Cases #0 and #1 will return 0 and have placed a terminating null at
+ *   `buffer[0]`.
+ *
+ *   Note that if EOF or ERROR results after one or more characters are successfully read, `buffer` will contain those
+ *   successfully read characters (and a terminating null) and their count.
+ */
 size_t readline(char *buffer, size_t buffer_len, FILE *source, bool incl_newline)
 {
     assert(buffer);
     assert(source);
-    if(feof(source) || ferror(source) || buffer_len == 0)
+    if(feof(source) || ferror(source) || buffer_len < 1)
         return 0;
     
     size_t chars_written = 0;
@@ -58,25 +63,29 @@ size_t readline(char *buffer, size_t buffer_len, FILE *source, bool incl_newline
 }
 
 /*
-* Read from a file until the first newline or EOF or error is reached.
-* Behavior similar to fgets, except the destination buffer can be realloc'd.
-*
-* Parameters:
-*   char** buffer: The line will be read into `buffer`
-*   size_t* size: The current size of `buffer`. This (and *buffer) will be grown geometrically if needed.
-*   FILE* source: A pointer to a valid FILE object that can be read from
-*   bool incl_newline: When a newline is encountered, should that be written into `buffer`?
-*
-* Returns:
-*   The number of characters that were written into `buffer`, excluding the terminating null character, which is always
-*   written unless `source` has EOF or ERROR set when the function called. Under normal circumstances this should be
-*   identical to the result of calling strlen(buffer) immediately after this function returns.
-*
-* Errors:
-*   See `readline` above. In addition, if the buffer needs to be grown but a call to realloc fails, the function returns
-*   whatever was able to be successfully read beforehand, just as if EOF had been encountered.
-*/
-//TODO: this function responds to EOF and a blank line identically when `incl_newline` is false. This is not good.
+ * Read from a file `source` into the C-string pointed to by `buffer` until the first newline or EOF or error is
+ * reached. Behavior is similar to `fgets`, except the destination buffer is realloc'd to try to contain the entire line
+ * if possible, and the number of characters written into the destination is returned in order to make a subsequent call
+ * to `strlen(buffer)` unnecessary.
+ *
+ * Parameters:
+ *   char** buffer: Characters will be copied into the C-string pointed at by `buffer`. This should be allocated on the
+ *                  heap so it can be grown as necessary.
+ *   size_t* size: A pointer to the initial/current size of the C-string pointed at by `buffer`. This will be updated if
+ *                 the buffer is grown.
+ *   FILE* source: A pointer to a valid FILE object to read characters from.
+ *   bool incl_newline: When a newline is encountered, should that be written into the buffer?
+ *
+ * Returns:
+ *   The number of characters that were written into `buffer`, excluding the terminating null character, which is always
+ *   written unless `source` has EOF or ERROR set when the function called. Under normal circumstances this should be
+ *   identical to the result of calling strlen(buffer) immediately after this function returns.
+ *
+ * Errors:
+ *   See `readline` above.
+ *   If the buffer needs to be grown but a call to `realloc` fails, the function returns whatever was able to be
+ *   successfully read up to that point, just as if EOF had been encountered.
+ */
 size_t readline_resizable(char **buffer, size_t *size, FILE *source, bool incl_newline)
 {
     // sanity checks
@@ -101,10 +110,11 @@ size_t readline_resizable(char **buffer, size_t *size, FILE *source, bool incl_n
         if(!incl_newline && next_char == '\n')
             break;
         
-        // check if needs resize and grow geometrically
-        if((dest_size-2) <= chars_written)
+        // check if the buffer needs to be resized, and grow geometrically
+        // also check for the corner case of dest_size==1 so size_t doesn't underflow
+        if(dest_size == 1 || (dest_size-2) <= chars_written)
         {
-            size_t new_size = (dest_size+1)*2;
+            size_t new_size = (dest_size + 1) * 2;
             char* new_str = realloc(str, new_size);
             if(new_str == NULL)
                 break;
@@ -160,12 +170,30 @@ size_t read_3_column_data(double** buffer, size_t nrows, FILE* source)
     return rows;
 }
 
-void write_n_column_data(FILE* destination, const size_t nrows, const size_t ncols,  ...)
+/*
+ *
+ * Write double values as a tab delimited file. Each array becomes a column.
+ *
+ * Parameters:
+ *  FILE* destination: A valid pointer to a writable file or stream
+ *  size_t nrows: The number of rows to write. This should be <= the length of all the data arrays.
+ *  size_t ncols: The number of arrays (of type double) being passed, and thus the number of columns to write
+ *  ...: Any number (>= `ncols`) of arrays of type double to be written. None should be shorter than `nrows`.
+ *
+ * Returns:
+ *  The number of rows successfully written. Always equal to `nrows` unless an error flag was raised on the stream.
+ *
+ * Errors:
+ *  If the error flag is set on `destination`, either beforehand or in the process of writing, this function will return
+ *  the number of rows successfully written. This can be compared to the input `nrows` to see if something went wrong.
+ */
+size_t write_n_column_data(FILE* destination, const size_t nrows, const size_t ncols,  ...)
 {
     assert(destination);
     
     va_list vargs;
-    for(size_t r = 0; r < nrows && !ferror(destination); r++)
+    size_t r;
+    for(r = 0; r < nrows && !ferror(destination); r++)
     {
         va_start(vargs, ncols);
         for(size_t c = 0; c < ncols && !ferror(destination); c++)
@@ -179,4 +207,5 @@ void write_n_column_data(FILE* destination, const size_t nrows, const size_t nco
         }
         va_end(vargs);
     }
+    return r;
 }
